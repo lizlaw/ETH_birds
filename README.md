@@ -20,4 +20,5 @@ Poor convergence of initial models likely due to overparameterisation, and curre
   * v7. v6 + assumed that all rare species (observed <1 in all study) have the same same beta parameters. 
 
 All code contained within ~R/ folder
+
 Note: gitignore set for ~Data/ and ~Results/ folders because of data permissions and large data samples produced
