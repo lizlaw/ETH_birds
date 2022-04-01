@@ -1,8 +1,8 @@
 # Data folder
-Data/
+Data/*
 
 # Results folder
-Results/
+Results/*
 
 # History files
 .Rhistory
