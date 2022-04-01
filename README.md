@@ -9,6 +9,7 @@ _Methods_: Models developed as multi-species occupancy models (in nimble), as th
 Initial variables considered include:
   * Occupancy: elevation, topographic wetness index, heat load index, slope, distance to forest edge, historical distance to forest edge, farm/forest type (i.e. whether farm/forest in 1985), percent woody vegetation, landscape diversity (simpsons diversity) at 1ha and 200m diameter.  
   * Detection: start time (including quadratic), date, visibility, cloud, number of observers, recording.
+  * 
 These initial variables were transformed/re-categorised and scaled+centred to improve normality/spread, then pre-selected via pearson's correlation, stepwise AIC glm, random forest, and multi-model inference (on glm models). Starting models for multi-occupancy:
   * FARM: elevation+fl_dis+sidi1ha+slope+farm_type || date+start1+start2+visibility
   * FOREST: elevation+fr_dis+slope+forest_type || date+start1+start2+n_observers
