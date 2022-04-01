@@ -48,6 +48,10 @@ SR_cond[i] = sum(z[i,1:k]) # sum over k for predictions conditional on the data 
 library(nimble)
 # library(nimbleEcology) - don't need this as not using a simple occupancy model
 library(tidyverse)
+
+data_input_code <- "~/nimbleModel_multiOcc_v5_forestData.R"
+results_folder <- "~/Results/"
+version_folder <- "v5/"
 ```
 
 # build model
@@ -161,7 +165,7 @@ occupancy_code <- nimbleCode({
 # Specify model: code, data (observed), constants (set), and inits (starting value for estimated values)
 
 ```{r import data}
-source("/Users/elaw/Desktop/LeuphanaProject/BirdModelling/Leuphana_Bird_Modelling/nimbleMultiOcc/nimbleModel_multiOcc_v5_forestData.R")
+source(data_input_code)
 ```
 
 ## the short, default way
@@ -208,7 +212,7 @@ samples <- nimbleMCMC(
 ```
 
 ```{r save results}
-saveRDS(samples, paste0("BirdOccMod_samples_forest", format(Sys.time(), "%Y%m%d"), ".RDS"))
+saveRDS(samples, paste0(results_folder, version_folder,"BirdOccMod_samples_forest", format(Sys.time(), "%Y%m%d"), ".RDS"))
 ```
  
 # model diagnostics
@@ -234,12 +238,12 @@ MCMCtrace(samples,
           params = pg1,
           ind = TRUE, 
           Rhat = TRUE, n.eff = TRUE,
-          filename = paste0("plots_traceDensity_pg1_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
+          filename = paste0(results_folder, version_folder,"plots_traceDensity_pg1_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
 MCMCtrace(samples, 
           params = pg2,
           ind = TRUE, 
           Rhat = TRUE, n.eff = TRUE,
-          filename = paste0("plots_traceDensity_pg2_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
+          filename = paste0(results_folder, version_folder,"plots_traceDensity_pg2_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
 
 # caterpillar plots
 MCMCplot(samples, 

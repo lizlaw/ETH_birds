@@ -31,7 +31,10 @@ The most pragmatic of the latter might be to assume all species that are seen ra
 ```{r library setup}
 library(nimble)
 library(tidyverse)
-myversion <- "v6"
+
+data_input <- "~Data/nimbleModel_multiOcc_v6_allData.RDS"
+results_folder <- "~/Results/"  
+version_folder <- "v6/"
 ```
 
 # build model
@@ -133,7 +136,7 @@ occupancy_code <- nimbleCode({
 # Specify model: code, data (observed), constants (set), and inits (starting value for estimated values)
 
 ```{r import data}
-nimData <- readRDS("/Users/elaw/Desktop/LeuphanaProject/BirdModelling/Leuphana_Bird_Modelling/nimbleMultiOcc/nimbleModel_multiOcc_v6_allData.RDS")
+nimData <- readRDS(data_input)
 
 y_all <- nimData$y_all
 farmSites <- nimData$farmSites
@@ -275,7 +278,7 @@ samples <- nimbleMCMC(
 ```
 
 ```{r save results}
-saveRDS(samples, paste0("BirdOccMod_samples_farm_", myversion, "_", format(Sys.time(), "%Y%m%d"), ".RDS"))
+saveRDS(samples, paste0(results_folder, version_folder, "BirdOccMod_samples_farm_", format(Sys.time(), "%Y%m%d"), ".RDS"))
 ```
  
 # model diagnostics
@@ -301,12 +304,12 @@ MCMCtrace(samples,
           params = pg1,
           ind = TRUE, 
           Rhat = TRUE, n.eff = TRUE,
-          filename = paste0("plots_traceDensity_pg1_farm_", myversion, "_", format(Sys.time(), "%Y%m%d"), ".pdf"))
+          filename = paste0(results_folder, version_folder, "plots_traceDensity_pg1_farm_", format(Sys.time(), "%Y%m%d"), ".pdf"))
 MCMCtrace(samples, 
           params = pg2,
           ind = TRUE, 
           Rhat = TRUE, n.eff = TRUE,
-          filename = paste0("plots_traceDensity_pg2_farm_", myversion, "_", format(Sys.time(), "%Y%m%d"), ".pdf"))
+          filename = paste0(results_folder, version_folder, "plots_traceDensity_pg2_farm_", format(Sys.time(), "%Y%m%d"), ".pdf"))
 
 # caterpillar plots
 MCMCplot(samples, 
@@ -322,4 +325,3 @@ MCMCplot(samples,
          HPD = FALSE)  # plots equal tailed credible intervals
 ```
 
-Model diagnostics of residuals
