@@ -15,9 +15,9 @@ These initial variables were transformed/re-categorised and scaled+centred to im
 
 Poor convergence of initial models likely due to overparameterisation, and currently attempting to simplify the model. Versions:
 
-  v5. initial model versions with extraneous predictor variables removed
-  v6. removed tau (not required in nimble), omega (doesn't do anything here, as we don't select from a regional pool - we estimate directly the number of missing species via rarefication), assume that all npsi (occ parameters) share the same sd.betalpsi, assume that all np (obs parameters) share the same sd.betalp
-  v7. v6 + assumed that all rare species (observed <1 in all study) have the same same beta parameters. 
+  * v5. initial model versions with extraneous predictor variables removed
+  * v6. removed tau (not required in nimble), omega (doesn't do anything here, as we don't select from a regional pool - we estimate directly the number of missing species via rarefication), assume that all npsi (occ parameters) share the same sd.betalpsi, assume that all np (obs parameters) share the same sd.betalp
+  * v7. v6 + assumed that all rare species (observed <1 in all study) have the same same beta parameters. 
 
 All code contained within ~R/ folder
 Note: gitignore set for ~Data/ and ~Results/ folders because of data permissions and large data samples produced
