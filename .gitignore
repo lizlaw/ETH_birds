@@ -1,3 +1,9 @@
+# Data folder
+Data/
+
+# Results folder
+Results/
+
 # History files
 .Rhistory
 .Rapp.history

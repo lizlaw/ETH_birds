@@ -1,0 +1,414 @@
+---
+title: "bayesBirdModel_multiSPecies_v5 - forest"
+author: "Liz Law"
+date: "10 Jan 2022"
+output: html_document
+---
+workingconservation@gmail.com
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Updates from v4:
+
+* Discussed with Chloé Nater (NINA)
+* Remove missing outcome sites
+* Species identified to genus as additional species (finalized version should compare removing these)
+* Included only FOREST and select variables with transformations for this.
+
+Needs to be addressed
+
+* finish model checking
+
+# Why we need an occupancy model
+Because we have uncertainty due to observation as well as the occupancy process we want to model. In addition, true occupancy may include many species that we did not see in the study. The main problem with not accounting for imperfect observation is that it may be biased: in farmland birds are likely going to be more visible, because of the reduced vegetation. I am not sure how much birds might be more audible, in forest, because the observer is less visible to the birds - if this balances out visual observation biases. Likely, probability of detection (if there) is likely higher in farmland than forest. If we don't account for this, then this biases positively towards forest, and reduces perceived value of farmland.
+
+# Multi-species occupancy models.
+These leverage the information of commonly observed species to estimate patterns of those that are less common or unobserved. Typically these are done in Bayesian MCMC frameworks, which require a lot of subjective decisions.
+
+Note summary from https://doi.org/10.1002/ece3.4821: "estimates of total richness are sensitive to model structure and often uncertain. Appropriate selection of priors, testing of assumptions, and model refinement are all important to enhance estimator performance. Yet, these do not guarantee accurate estimation, particularly when many species remain undetected"
+
+So this may not solve all our problems - but it's possibly worth a try given we have such uncertainty. 
+
+# The model framework
+
+Define, for each species:
+
+* `y[i,j,k]` as the observation of a species `k` recorded from site `i` on visit `j`. `y` is binary.
+* `psi[i,k]` is the occupancy probability
+* `p[i,j,k]` is the detection probability
+* `z[i,k]` is the latent state of whether a site is really occupied (binary) by species `k`
+* `nSite` is the number of sites
+* `nVisits` is the number of sampling visits to each site
+* `Nobs` is the number of species observed in the study
+* `M` is the total possible species pool, such that `M` >> `Nobs` if including unseen species, M = Nobs otherwise. 
+
+*latent occupancy is linearly related to the environmental variables*
+`z[i,k] ~ dbern(psi[i,k])`
+`logit(psi[i,k]) = beta0[k] + beta1[k]*X1[i] + beta2[k]*X2[i] + ...` (plus other environmental predictors)
+
+*observed occupancy is a function of occupancy and observability, the latter linearly related to spatial/temporal variables*
+In this case, we assume only false negatives (not false positives)
+`y[i,j,k] ~ dbern(z[i,k]*p[i,j,k])`
+`logit(p[i,j,k]) = alpha0[k] + alpha1[k]*Y1[i,j] + alpha2[k]*Y2[i,j] + ...` (plus other environmental predictors)
+
+*site specific species richness, and conditional species richness*
+SR[i] = sum(psi[i,1:k])    # sum over k
+SR_cond[i] = sum(z[i,1:k]) # sum over k for predictions conditional on the data observed at surveyed sites
+
+*options*
+Can either model as the collection of independent single-species occupancy models OR
+link by modelling parameters as random effects (i.e. hyperparameters mu and sd to be estimated), and thereby leverage observations of more common species for estimation of less common ones:
+
+`beta0[k] ~ dnorm(mu_b0, sd_b0)`
+`beta1[k] ~ dnorm(mu_b1, sd_b1)`
+.. and so on for all beta for all species k. (This assumes that the beta from all the species come from a normal distribution). 
+
+Can include the species never observed in the study such that the total species is given by `M`. Note, while the choice of `M` is not critical, it should be >> the true number of species `N` (which is bigger than the observed). To do this, introduce `omega`, the probability the species is part of the community, resulting in the binary `w[k]`. This can then be summed to get the regional species richness pool. (we probably don't want this, particularly as it slows the computation considerably, and the interpretation of what N relates to is difficult).
+
+`w[k] ~ dbern(omega)`
+`z[i,k] ~ dbern(w[k]*psi[i,k])`
+`N = sum(w[1:k])`  # sum over k
+
+*choice of priors*
+Common practice is to use weakly informative priors:
+`mu_beta ~ dnorm(0, 31)` 
+`sd_beta ~ dunif(0, 5)`  # or dunif(0, 10) or gamma priors are also common
+`omega ~ dunif(0, 1) `
+
+Better practice suggested by https://doi.org/10.1002/ece3.4821:
+`mu_beta ~ dnorm(0, 2.25)`  # most improvement with this
+`sd_beta ~ dunif(0, 5)` 
+`omega ~ dbeta(0.001, 1)`   # can lead to lower convergence
+
+*mcmc parameters*
+From https://doi.org/10.1002/ece3.4821: "Analyses were conducted drawing three MCMC chains, with 20,000 MCMC samples per chain, after a burn-in of 10,000. If there was no convergence, 20,000 additional samples were drawn, with all previous ones discarded as burn-in. We thinned chains by 10, obtaining 6,000 samples [i.e. 2,000 per chain] to characterize the posterior. ... Predictors were standardized to have zero mean and variance of 1."
+
+*evaluation of the model*
+See discussion on evaluation below. 
+
+From https://doi.org/10.1002/ece3.4821: "We assessed convergence using the R_hat statistic (Gelman & Rubin, 1992), assuming no evidence of lack of convergence when R_hat < 1.1."
+
+From https://doi.org/10.1002/ece3.4821: "We therefore suggest that large estimates with broad credible intervals should be interpreted as an indication that species might have been missed, rather than as a reliable indication of species numbers. Where many species are missed, the sample size and/or the occupancy/detection probabilities are small. These are conditions that do not allow reliable estimation of occupancy and detectability, so it is unsurprising that the associated estimation of N is also poor."
+
+*Filling in NA values - Chloe's recommendations*
+Previously I had NA values, but did not specify models to fill them. There are generally two ways of dealing with NA values in nimble models:
+
+_1) Estimate them._ 
+This works really well, for example, if you have covariates with only a few missing values. If you are going to estimate NA nodes, you still pass your observation or covariate data as is, i.e. with the NA entries. You then need to a) write a process model and b) initialize the missing nodes.
+
+a) is redundant for your observation data since you will already have a process model (the bit where your observation data is on the left side of a tilde). For covariates, which typically only appear on the right hand side of “<-“ and tilde, you need to write a process model, i.e. specify the expected distribution of your missing covariate values. For example, you can specify a normal distribution with the mean and sd of all known covariate values.
+
+For b) you need to provide initial value vectors/arrays that have the same dimension as the data in which NAs occur. In these initial value vectors/arrays, all nodes for which data is NA need to be filled with a sampled initial values. All nodes for which data is not NA have to be NA in the initial value vectors/arrays.
+
+With both a) and b) in place, nimble will use your observed data nodes when they are available, and will estimate them if they are NA.
+
+I am attaching a .html of a code manual I am working on (https://github.com/SPI-Birds/SPI-IPM). It’s for an integrated population model, but Chapter 3.2.3 deals with how to deal with NA covariate values.
+
+_2) Set to 0 and add a dummy observation model_
+This second “trick” is something I often use for dealing with missing sampling occasions. Say we are dealing with count data, which were collected over 10 years, but in year 8, no sampling took place.
+
+y = c(20, 25, 23, 60, 39, 38, 50, NA, 70, 47)  # missing year 8
+y[t] ~ Poisson(N[t]*obsP[t])                   # observation model, where N[t] is the latent population size I am estimating.
+obsP[t] <- c(1, 1, 1, 1, 1, 1, 1, 0, 1, 1)     #   with added 'observation made' binary probability
+
+Methods 1) and 2) do the same thing in practice. It’s a matter of preference in any given situation, really.
+
+*Dealing with poorly mixing variables*
+
+Prior version had several variables that were poorly mixing, and often also poorly converging. These are typically variables that showed little relationships with the outcome variable. 
+
+Chloe recommends two ways of dealing with poor mixing:
+
+_1) Simplify the model structure_ 
+(as you suggest). Covariate selection with Bayesian models is a pain and there’s generally three things that I do to make an a priori selection:
+
+* Run “quick-and-dirty” models to check the tentative support for different effects. You seem to have done that already.
+* Check for cross-correlations. If any pair of covariates is highly correlated, I only include one. In this case, you have to remember when you interpret/discuss effects that it could also be caused by the other, strongly correlated covariate that was omitted from the model.
+* Common sense. Biological intuition. A good argument. Call it what you will, but it’s totally allowed to just make a decision if it has both biological and practical reasons that you can defend.
+ 
+_2) Change the samplers._ 
+This is an option if you absolutely want to try keeping all your covariates. I am not an expert here, but it can help to use different samplers. If you have several posteriors that are strongly correlated, for example, it can be worth to try out block sampling. There are good materials on how to change samplers on the nimble website.
+
+*Projecting to new data - Chloe's recommendations*
+You have to do it manually. Here’s a short recipe of how I do it:
+
+* Make a vector containing evenly spaced covariate values representing the range you want to plot (I typically use about 100 values)
+* For each posterior sample i, make the prediction of your variable of interest using the parameter estimates in sample i for each covariate value in your dummy vector. It’s gonna need a for-loop, but that’s okay 😉
+* For plotting, summarise the posterior distributions of predictions you got for each covariate value in your dummy vector (e.g. median, 2.5% quantile, 97.5% quantile)
+* Plot
+
+# Setup
+```{r library setup}
+library(nimble)
+# library(nimbleEcology) - don't need this as not using a simple occupancy model
+library(tidyverse)
+```
+
+# build model
+
+Based on https://github.com/nimble-training/AHMnimble/blob/master/Chapter_11/Section_11p6p3_example_nimble.R
+and https://github.com/nimble-training/AHMnimble/blob/master/Chapter_11/Section_11p7p2_example_nimble.R
+and also check https://doi.org/10.1002/ece3.6053 
+
+New updates to deal with missing data as advised by Chloé Nater.
+
+```{r model code}
+occupancy_code <- nimbleCode({
+  
+  # Priors
+  
+    # Proportion of species present in the study region assuming nSpecies > nObsSpecies
+    omega ~ dbeta(0.001, 1)
+    # option to truncate this to Nobs/M - 1 (can't be less than observed)
+    # omega ~ dunif(Nobs/M,1)  
+    # omega ~ T(dbeta(0.001, 1), Nobs/M, 1)  
+    
+    # Hyperpriors describe the community
+  
+    # For the model of occupancy (psi)
+    mu.lpsi ~ dnorm(0,0.01)
+    tau.lpsi <- pow(sd.lpsi, -2)  # power: pow(x,y) = x^y
+    sd.lpsi ~ dunif(0, 12)   # as always, bounds of uniform chosen by trial and error
+    
+    for (lpsii in 1:npsi){
+      mu.betalpsi[lpsii] ~ dnorm(0, 2.25)          # recommended default priors
+      tau.betalpsi[lpsii]  <- pow(sd.betalpsi[lpsii] , -2)
+      sd.betalpsi[lpsii]  ~ dunif(0, 5)
+    }
+
+    # For the model of detection (p)
+    mu.lp ~ dnorm(0, 0.1)
+    tau.lp <- pow(sd.lp, -2)
+    sd.lp ~ dunif(0, 5)
+    
+    for (lpi in 1:np){
+      mu.betalp[lpi] ~ dnorm(0, 2.25)
+      tau.betalp[lpi] <- pow(sd.betalp[lpi], -2)
+      sd.betalp[lpi] ~ dunif(0, 5)
+    }
+    
+    # Priors for species-specific effects in occupancy and detection
+    # are derived from the community level distributions
+    for(k in 1:M){
+      # occupancy
+      lpsi[k] ~ dnorm(mu.lpsi, tau.lpsi)    
+      for (lpsii in 1:npsi){
+         betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], tau.betalpsi[lpsii])
+      }
+      
+      # detection
+      lp[k] ~ dnorm(mu.lp, tau.lp)
+      for(lpi in 1:np){
+        betalp[k, lpi] ~ dnorm(mu.betalp[lpi], tau.betalp[lpi])
+      }
+    }
+    
+    # Super-population process: proportion of species in the regional pool part of the community 
+    for(k in 1:M){
+      w[k] ~ dbern(omega)  # w is binary presence of each species in the community
+    }
+    
+    # Ecological model for true occurrence (process model) - enviro variables, interacting with habitat
+    # here 1, 2, 3, represent: habitat, farm85, forest85, elevation, twi, dis, dis85
+    for(k in 1:M){
+      for (i in 1:nSite) {
+        logit(psi[i,k]) <- lpsi[k] + 
+          # series of betalpsi1[k] * X1[i]
+          # inprod(betalpsi[k,1:npsi], Xoc[i,1:npsi])  
+           betalpsi[k,1] * Xoc[i,1] +  # elevation
+           betalpsi[k,2] * Xoc[i,2] +  # fr_dis
+          # betalpsi[k,3] * Xoc[i,3]   # slope
+           betalpsi[k,4] * Xoc[i,4]   # forest_type !Binary
+        mu.psi[i,k] <- w[k] * psi[i,k]
+        z[i,k] ~ dbern(mu.psi[i,k])
+      }
+    }
+    
+    # Observation model for replicated detection/non-detection observations 
+    # n_observers + visibility + recording + date + start
+    for(k in 1:M){
+      for (i in 1:nSite){
+        for(j in 1:nVisits){
+          logit(p[i,j,k]) <- lp[k] + 
+            # series of betalp1[k] * X1[i,j]
+            # inprod(betalp[k,1:np], Xob[i,j,1:np]) 
+            betalp[k,1] * Xob[i,j,1] + # date
+            betalp[k,2] * Xob[i,j,2] + # start1
+            betalp[k,3] * Xob[i,j,3] + # start2
+            betalp[k,4] * Xob[i,j,4]   # n_observers !Binary
+          mu.p[i,j,k] <- z[i,k] * p[i,j,k]   
+          Y[i,j,k] ~ dbern(mu.p[i,j,k])  
+        }
+      }
+    }
+    
+    # Derived quantities
+    for (i in 1:nSite){
+      SR_site[i] <- sum(z[i,1:M])          # Number of occurring species at each site
+    }
+    n0 <- sum(w[(Nobs+1):M])              # Number of unseen species over study
+    Ntotal <- sum(w[1:M])                 # Total metacommunity size
+    
+})
+```
+
+# Specify model: code, data (observed), constants (set), and inits (starting value for estimated values)
+
+First, import the data
+
+Convert observations to presence absence binary _observation array: [site, visit, species]_
+
+For the observation variables, the following variables were noted within simple glms:
+c("habitat", "n_observers", "recording", "date", "start", "visibility", "cloud").
+We might include all of these, and their interaction with habitat. We might have liked canopy and understorey too, but there are more missing variables in these that make for complex filling of variables.
+We need these in an _obs_covariate array: [site, visit, variable]_
+
+For the occupancy variables, few of these were significant. 
+
+Prior work on the forest data: Rodruiges et al https://doi.org/10.1016/j.biocon.2017.10.036 "Moist evergreen forests of southwestern Ethiopia host high levels of biodiversity and have a high economic value due to coffee production. Coffee is a native shrub that is harvested under different management systems; its production can have both beneficial and detrimental effects for biodiversity. We investigated how bird community composition and richness, and abundance of different bird groups responded to different intensities of coffee management and the landscape context. We surveyed birds at 66 points in forest habitat with different intensities of coffee management and at different distances from the forest edge. We explored community composition using detrended correspondence analysis in combination with canonical correspondence analysis and indicator species analysis, and _used generalized linear mixed models to investigate the responses of different bird groups to coffee management and landscape context_. Our results show that (1) despite considerable bird diversity including some endemics, _species turnover in the forest was relatively low_; (2) _total richness and abundance of birds were not affected by management or landscape context_; but (3) the _richness of forest and dietary specialists increased with higher forest naturalness, and with increasing distance from the edge and amount of forest cover_. These findings show that traditional shade coffee management practices can maintain a diverse suite of forest birds. To conserve forest specialists, retaining undisturbed, remote forest is particularly important, but structurally diverse locations near the forest edge can also harbour a high diversity of specialists."
+
+Distance from forest edge, distance in 1985, amount of forest cover (local and regional scale), elevation, topographic wetness, farm/forest type. 
+
+```{r import data}
+source("/Users/elaw/Desktop/LeuphanaProject/BirdModelling/Leuphana_Bird_Modelling/nimbleMultiOcc/nimbleModel_multiOcc_v5_forestData.R")
+```
+
+## the short, default way
+```{r run nimbleMCMC}
+
+# MCMC settings - development - final
+# ni <- 10      ;   nt <- 1    ;   nb <- 0       ;   nc <- 3
+ ni <- 25000   ;   nt <- 10   ;   nb <- 0  ;   nc <- 3
+# ni <- 50000   ;   nt <- 20   ;   nb <- 0   ;   nc <- 3
+# ni <- 50000   ;   nt <- 20   ;   nb <- 15000   ;   nc <- 3
+# ni <- 100000  ;   nt <- 20   ;   nb <- 25000   ;   nc <- 3
+
+samples <- nimbleMCMC( 
+  code = occupancy_code,
+  data = data,
+  constants = constants,
+  inits = inits,
+  monitors = params1,
+  thin = nt, 
+  niter = ni, 
+  nburnin = nb, 
+  nchains = nc)
+```
+
+## Or the long way
+```{r not run manually compile build run}
+# # Build the model
+# occupancy_model <- nimbleModel(
+#  occupancy_code,
+#  data = data,
+#  constants = constants,
+#  inits = inits
+# )
+# 
+# # configure the MCMC algorithm and build the MCMC object
+# MCMCconf <- configureMCMC(occupancy_model, monitors = params1)
+# MCMC <- buildMCMC(MCMCconf, monitors = params1, thin = nt, monitors2 = params2, thin2 = nt)
+# 
+# # compile for faster execution
+# CMCMC <- compileNimble(MCMC, project = occupancy_model)
+# 
+# ## Run the MCMC and extract the samples
+# samples <- runMCMC(mcmc = CMCMC, niter = ni, nburnin = nb, nchains = nc)
+```
+
+```{r save results}
+saveRDS(samples, paste0("BirdOccMod_samples_forest", format(Sys.time(), "%Y%m%d"), ".RDS"))
+```
+ 
+# model diagnostics
+
+Notes from:
+
+https://bcss.org.my/tut/bayes-with-jags-a-tutorial-for-wildlife-researchers/occupancy-modelling/basic-occupancy-modelling/
+https://bcss.org.my/tut/bayes-with-jags-a-tutorial-for-wildlife-researchers/mcmc-and-the-guts-of-jags/mcmc-diagnostics/
+https://mmeredith.net/blog/2019/MCMC_diagnostics.htm
+(uses `mcmcOutput` (previously wiqid))
+
+* Convergence: A Markov chain is a sequence of numbers where each one depends on the one before. The very first value is a random draw from the prior distribution, unless we provide specific initial values. Then the chain moves over the posterior distribution, eventually converging on the target distribution. The usual way to assess convergence is to run multiple chains. If all the chains are close to the target distribution, they must be close to each other. (Unfortunately the inverse is not true: they can be close to each other but far from the target.) Checking the trace plots and density plots – with separate density curves for each chain – is an essential part of checking output.
+
+We need to check two things: (1) bias: are the draws representative of the whole posterior distribution? and (2) precision: do we have enough draws to get sufficiently precise summary statistics? Some potential problems that may cause issues with bias and imprecision:
+
+Visual check of the MCMC chains:
+
+* Insufficient burn in is characterised by the chains not aligning from the start (but getting there in the end). This will affect the posterior distribution and therefore the estimate. Chains can be examined for 'switching' behaviour, and if they all switch one way, discard chains if longer burn in can't be used, or select appropriate initial values to coerce these to start from a good position.
+* Prior constraints - checking whether the MCMC chain is being (unduly) constrained by the priors. This will be indicated by a clipped distribution.
+* Non-identifiability - when the parameters in the chains do not seem to converge on a common distribution. These will usually be characterised by a large Rhat value (>>1)
+* poor mixing is characterised by the MCMC chains being in the same space, but taking small steps, even after thinning, so there is autocorrelation and low effective sample sizes. This problem is discussed further here: https://mmeredith.net/blog/2016/Adapt_or_burn.htm
+
+Some metrics:
+
+* Rhat is the metric of the “Potential Scale Reduction Factor” or PSRF. It compares the spread of all the draws pooled / the spreads of the individual chains, and at convergence this should = 1. There are many methods to do this, the Brooks-Gelman-Rubin version (e.g. in mcmcOutput) uses the difference between the 10th and 90th percentiles; this makes no normality assumptions, unlike methods based on variances. In general, convergence is considered with a threshold of 1.05 - 1.1.
+* Monte Carlo Standard Error - divide the chain of draws into batches; a chain of length 10,000 could be divided into 100 batches with 100 draws in each. Calculate the statistic you are interested in, usually the mean, and calculate the Standard Error. This is implemented in mcmcOutput::getMCerror(). The MCSE is usually expressed as a percentage of the SD of the posterior distribution. This is shown as MCEpc in plots generated by mcmcOutput::diagPlot. Estimates of the mean of the distribution are generally acceptable if the MCSE is less than 5% of the SD. The end points of credible intervals are more variable than the mean, so an MCSE below 1.5% is recommended for reliable credible intervals (Lunn et al, 2013).
+* The effective sample size (ESS) or effective number of draws (n.eff), the number of independent draws which would contain the same information (in terms of precision) as the Markov chain to hand. Typically 1000 independent draws from a normal distribution will give adequately precise estimates of the population mean (root mean square error about 3% of population SD). But with Markov Chains not being independent, the ESS gives us a better estimate of this. E.g. coda::effectiveSize() calculates this. Lunn et al (2013) suggest that 400 may be enough in practice for estimation of means, as it’s equivalent to an MCSE of 5% of SD. However, 4000 are recommended for proper estimation of a 95% credible interval: with that number the coverage will be between 94 and 96%. (And on the other hand, Gelman et al (2014, p288) say that ESS of 10 per chain is adequate.) [Gelman, A., Carlin, J.B., Stern, H.S., Dunson, D.B., Vehtari, A., & Rubin, D.B. (2014) Bayesian data analysis, 3 edn. Chapman and Hall/CRC, Boca Raton]
+
+Packages:
+
+* `mcmcOutput` (previously wiqid)) provides a way of storing mcmc output, in addition provides plot and summary (inc Rhat, MCEpc and n.eff) diagnostics.
+* `coda` and `ggmcmc` packages (e.g. https://gkonstantinoudis.github.io/nimble/COVID19regression.html#MCMC_diagnostics)
+* `MCMCvis` https://cran.r-project.org/web/packages/MCMCvis/vignettes/MCMCvis.html Seems like the most up to date package.
+
+# `MCMCvis` diagnostics
+
+MCMCsummary - output summary information from MCMC output + rhat and n.eff
+MCMCtrace - trace and density plots for MCMC output 
+
+* `omega`, the probability the species is part of the community, resulting in the binary `w[k]`
+* `z[i,k]` is the latent state of whether a site is really occupied (binary) by species `k`
+* `Ntotal` total number of species occupants in study (sum(w[1:M]))
+* `SR_site[i]` Number of occurring species at each site (sum(z[i,1:M]))
+* `n0` Number of unseen species over study predicted to be there (sum(w[(Nobs+1):M]))
+
+* `psi[i,k]` is the occupancy probability (we recorded mu and sd log psi, and the betas for correlates)
+* `p[i,j,k]` is the detection probability (we recorded mu and sd log p, and the betas for correlates)
+
+ 
+```{r MCMCvis}
+
+library(MCMCvis)
+
+pg1 <- c("omega", "n0", "Ntotal", "SR_site")
+pg2 <-c("mu.lpsi", "sd.lpsi", "mu.betalpsi", "sd.betalpsi", "mu.lp", "sd.lp", "mu.betalp", "sd.betalp")
+
+# summary of estimates
+mySum1 <- MCMCsummary(samples, 
+            params = pg1, 
+            round = 2)
+
+mySum2 <- MCMCsummary(samples, 
+            params = pg2, 
+            round = 2)
+
+# trace plots
+MCMCtrace(samples, 
+          params = pg1,
+          ind = TRUE, 
+          Rhat = TRUE, n.eff = TRUE,
+          filename = paste0("plots_traceDensity_pg1_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
+MCMCtrace(samples, 
+          params = pg2,
+          ind = TRUE, 
+          Rhat = TRUE, n.eff = TRUE,
+          filename = paste0("plots_traceDensity_pg2_forest", format(Sys.time(), "%Y%m%d"), ".pdf"))
+
+# caterpillar plots
+MCMCplot(samples, 
+         # samples for model 2,
+         params = pg2, 
+         ci = c(50, 90), 
+         HPD = FALSE)  # plots equal tailed credible intervals
+
+MCMCplot(samples, 
+         # samples for model 2,
+         params = 'SR_site', 
+         ci = c(50, 90), 
+         HPD = FALSE)  # plots equal tailed credible intervals
+```
+
+Model diagnostics of residuals
