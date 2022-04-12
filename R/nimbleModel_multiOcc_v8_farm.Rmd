@@ -15,7 +15,7 @@ Updates from v7:
 * remove known info on z
 * provide all uniform priors, logit mulpsi
 * betalP not species specific
-* rare species no longer share params
+* rare species share params
 
 # Setup
 ```{r library setup}
@@ -65,20 +65,39 @@ occupancy_code <- nimbleCode({
     
     # Priors for species-specific effects in occupancy and detection
     # are derived from the community level distributions
-    for(k in 1:M){   
+
+    ## COMMON SPECIES
+    for(k in 1:commonSpp){   
       # occupancy
       lpsi[k] ~ dnorm(mu.lpsi, sd=sd.lpsi)    
       for (lpsii in 1:npsi){
          betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)# [lpsii])
       }
-      
-      # detection
+      # detection - species specific
       lp[k] ~ dnorm(mu.lp, sd=sd.lp)
-      #for(lpi in 1:np){
-      #  betalp[k, lpi] ~ dnorm(mu.betalp, sd=sd.betalp) #[lpi])
-      #}
+    }       
+    
+    ## RARE SPECIES - share params
+    ### first make the rare params
+     lpsiRARE ~ dnorm(mu.lpsi, sd=sd.lpsi) 
+     for (lpsii in 1:npsi){
+         betalpsiRARE[lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)# [lpsii])
+     }
+     lpRARE ~ dnorm(mu.lp, sd=sd.lp)
+     
+    # then insert it into the matrix 
+    for(k in rareSpp:M){
+      # occupancy
+      lpsi[k] <- lpsiRARE
+      for (lpsii in 1:npsi){
+         betalpsi[k, lpsii] <- betalpsiRARE[lpsii]
+      }
+      
+      # detection - rare species specific
+      lp[k] <- lpRARE
     }
-     for(lpi in 1:np){
+      # detection, non-species specific
+      for(lpi in 1:np){
         betalp[lpi] ~ dnorm(mu.betalp, sd=sd.betalp) #[lpi])
       }
     
@@ -236,8 +255,8 @@ params1 <- c("mu.lpsi", "sd.lpsi", "mu.betalpsi", "sd.betalpsi",
 # MCMC settings - development - final
 # (ni - nb)/nt # samples per chain
 # ni <- 10      ;   nt <- 1    ;   nb <- 0       ;   nc <- 3
- ni <- 25000   ;   nt <- 10   ;   nb <- 0   ;   nc <- 3
-# ni <- 50000   ;   nt <- 20   ;   nb <- 0   ;   nc <- 3
+# ni <- 25000   ;   nt <- 10   ;   nb <- 0   ;   nc <- 3
+ni <- 50000   ;   nt <- 20   ;   nb <- 0   ;   nc <- 3
 # ni <- 50000   ;   nt <- 20   ;   nb <- 15000   ;   nc <- 3
 # ni <- 130000  ;   nt <- 30   ;   nb <- 25000   ;   nc <- 3   # = 3500 samples per chain
 
