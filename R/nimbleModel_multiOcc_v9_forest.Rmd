@@ -1,0 +1,279 @@
+---
+title: "bayesBirdModel_multiSPecies_v9 - forest"
+author: "Liz Law"
+date: "26 Aug 2022"
+output: html_document
+---
+workingconservation@gmail.com
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Multi-species occupancy model using nimbleEcology
+* marginalized occupancy likelihood (docc)
+* uniform priors
+* variables are normalised prior to analysis
+* community occupancy hyperparameter sd.betalpsi not parameter specific
+* community detection hyperparameter mu.betalp and sd.betalp not parameter specific
+* rare species share lpsi, lp, and beta params
+
+# Setup
+```{r library setup}
+library(nimble)
+library(nimbleEcology)
+library(tidyverse)
+
+mySeed <- 0
+set.seed(mySeed)
+
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds"
+data_input <- paste0(wd, "/Data/nimbleModel_multiOcc_v6_allData.RDS")
+#wd <- "C:/Users/chloe.nater/OneDrive - NINA/Documents/Projects/Other/BirdOccupancy_Liz"
+#data_input <- paste0(wd, "/Data/nimbleModel_multiOcc_v6_allData.RDS")
+results_folder <- paste0(wd, "/Results/")  
+version_folder <- "v9/"
+```
+
+# build model
+```{r model code}
+occupancy_code <- nimbleCode({
+  
+  # Priors
+  
+  # Hyperpriors describe the community
+  # To constrain the model as much as is reasonable, we used constant sd for 
+  # all beta psi (occupancy) parameters, and a constant mu and sd for all beta p 
+  # (observation) parameters.
+  
+  # For the model of occupancy (psi)
+    Mu.lpsi ~ dunif(0,1)          # uniform community prior  
+    mu.lpsi <- logit(Mu.lpsi)     # logit model link
+    sd.lpsi ~ dunif(0, 12)        # bounds of uniform chosen by trial and error
+         
+    for (lpsii in 1:npsi){
+      mu.betalpsi[lpsii] ~ dunif(-5, 5) # mu for each psi param drawn from uniform prior 
+    }
+    sd.betalpsi  ~ dunif(0, 6) # constant sd for all species on all psi parameters
+  
+  # For the model of detection (p)
+    Mu.lp ~ dunif(0,1)          # uniform community prior
+    mu.lp <- logit(Mu.lp)       # logit model link
+    sd.lp ~ dunif(0, 5)         # bounds of uniform chosen by trial and error
+    
+    mu.betalp ~ dunif(-5, 5) # constant mu for all p params
+    sd.betalp ~ dunif(0, 5)  # constant sd for all p params
+  
+  # Priors for species-specific effects in occupancy and detection
+  # are derived from the community level distributions
+  # Here, we constrain the model further, by specifying that rare species share
+  # parameters. We have ordered the species by number of observations, and 
+  # defined rare and common species.
+  
+  ## COMMON SPECIES
+  for(k in 1:commonSpp){   
+    # occupancy 
+    lpsi[k] ~ dnorm(mu.lpsi, sd=sd.lpsi)    
+    for (lpsii in 1:npsi){
+      betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)
+    }
+    # detection
+    lp[k] ~ dnorm(mu.lp, sd=sd.lp)
+  }       
+  
+  ## RARE SPECIES - share params
+  ### first make the rare params
+  lpsiRARE ~ dnorm(mu.lpsi, sd=sd.lpsi) 
+  for (lpsii in 1:npsi){
+    betalpsiRARE[lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)
+  }
+  lpRARE ~ dnorm(mu.lp, sd=sd.lp)
+  
+  ### then insert it into the matrix 
+  for(k in rareSpp:M){
+    # occupancy
+    lpsi[k] <- lpsiRARE
+    for (lpsii in 1:npsi){
+      betalpsi[k, lpsii] <- betalpsiRARE[lpsii]
+    }
+    
+    # detection 
+    lp[k] <- lpRARE
+  }
+  
+  # detection, variable coefficient for each variable, but non-species specific
+  for(lpi in 1:np){
+    betalp[lpi] ~ dnorm(mu.betalp, sd=sd.betalp)
+  }
+  
+  # the multi-species occupancy model (for each species in each site)
+  
+  for(k in 1:M){
+    for (i in 1:nSite){
+      
+      logit(psi[i,k]) <- lpsi[k] + 
+        betalpsi[k,1] * Xoc[i,1] +  # elevation
+        betalpsi[k,2] * Xoc[i,2] +  # fr_dis
+        betalpsi[k,3] * Xoc[i,3]    # forest_type ! binary
+      
+      # mu.psi[i,k] <- psi[i,k]       
+      # z[i,k] ~ dbern(mu.psi[i,k])       ## occupancy drawn from psi
+
+      for(j in 1:nVisits){
+        
+        logit(p[i,j,k]) <- lp[k] + 
+          betalp[1] * Xob[i,j,1] + # date
+          betalp[2] * Xob[i,j,2] + # start1
+          betalp[3] * Xob[i,j,3] + # start2
+          betalp[4] * Xob[i,j,4]   # n_observers
+        
+        # mu.p[i,j,k] <- z[i,k] * p[i,j,k]   
+        # Y[i,j,k] ~ dbern(mu.p[i,j,k])     ## observations from occupancy and detection (p)
+
+      }
+      # Marginalized likelihood (dOcc_v from nimbleEcol)
+       Y[i,1:nVisits,k] ~ dOcc_v(
+        probOcc = psi[i,k], 
+        probDet = p[i,1:nVisits,k], 
+        len = nVisits)
+    }
+  }
+})
+
+```
+
+# Specify model: code, data (observed), constants (set), and inits (starting value for estimated values)
+
+```{r import data}
+nimData <- readRDS(data_input)
+
+y_all <- nimData$y_all
+forestSites <- nimData$forestSites
+OccVarsFrst <- nimData$OccVarsFrst
+ObsVarsFrst <- nimData$ObsVarsFrst
+sppTraits <- nimData$sppTraits
+Nadd <-  26 # based on individual rarefaction curves for total forest species
+
+y <- y_all[(dimnames(y_all)[[1]] %in% forestSites), , ]       # [site, visit, species]
+
+nSite <- dim(y)[1]
+nVisits <- dim(y)[2]
+Nobs <- dim(y)[3]
+M <- Nobs + Nadd
+Y <- abind::abind(y, array(0, dim = c(dim(y)[1:2], Nadd)))  ## add the 'missing' species - not seen so = 0, 'absence'
+
+Xoc <- OccVarsFrst %>% select(-point_id, -slope) %>% as.matrix() %>% array(dim = dim(.))   # [site, vars]
+Xob <- array(NA, dim = c(nSite, nVisits, dim(ObsVarsFrst)[2]-2)) # [site, visit, vars]
+Xob[,,1] <- ObsVarsFrst %>% arrange(round, point_id) %>% pull(date)
+Xob[,,2] <- ObsVarsFrst %>% arrange(round, point_id) %>% pull(start1)
+Xob[,,3] <- ObsVarsFrst %>% arrange(round, point_id) %>% pull(start2)
+Xob[,,4] <- ObsVarsFrst %>% arrange(round, point_id) %>% pull(n_observers)
+
+# constrain to selected variables
+Xoc <- Xoc[,1:3]
+Xob <- Xob[,,1:4]
+
+npsi <- dim(Xoc)[2]
+np <- dim(Xob)[3]
+
+# groups of interest
+fspp <- sppTraits$forSpec 
+mig <- sppTraits$migYes 
+fnDiet <- sppTraits$FruiNect 
+invDiet <- sppTraits$Invertebrate 
+
+# common/rare vector numbers
+rareSpp <- min(which(sppTraits$sumObs1))
+commonSpp <- rareSpp-1
+
+data <- list(Y = Y, 
+             Xoc = Xoc,
+             Xob = Xob)  
+constants <- list(nSite = nSite, 
+                  nVisits = nVisits, 
+                  Nobs = Nobs,
+                  Nadd = Nadd, 
+                  M = M,
+                  npsi = npsi,
+                  np = np,
+                  rareSpp=rareSpp,
+                  commonSpp=commonSpp,
+                  fspp=fspp,
+                  mig=mig,
+                  fnDiet=fnDiet,
+                  invDiet=invDiet)
+
+# Initial values - match up with the number of observed vars used in the model
+lpsi <- rnorm(n = M)
+betalpsi <- array(rnorm(n = M * npsi), dim = c(M, npsi))
+lp <- rnorm(n = M)
+betalp <- rnorm(n =  np) 
+
+inits <- list(
+  lpsi = lpsi, 
+  betalpsi = betalpsi, 
+  lp = rnorm(n = M), 
+  betalp = betalp 
+)
+
+# Set 1
+params1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p")
+
+```
+
+## the short, default way
+```{r run nimbleMCMC}
+
+# MCMC settings - development - final
+# (ni - nb)/nt # samples per chain
+# ni <- 10      ;   nt <- 1    ;   nb <- 0       ;   nc <- 3
+# ni <- 25000   ;   nt <- 10   ;   nb <- 0   ;   nc <- 3
+# ni <- 50000   ;   nt <- 20   ;   nb <- 0   ;   nc <- 3
+ ni <- 50000   ;   nt <- 20   ;   nb <- 15000   ;   nc <- 3
+# ni <- 130000  ;   nt <- 30   ;   nb <- 25000   ;   nc <- 3   # = 3500 samples per chain
+
+samples <- nimbleMCMC( 
+  code = occupancy_code,
+  data = data,
+  constants = constants,
+  inits = inits,
+  monitors = params1,
+  thin = nt, 
+  niter = ni, 
+  nburnin = nb, 
+  nchains = nc)
+```
+
+```{r save results}
+saveRDS(samples, paste0(results_folder, version_folder, "BirdOccMod_dOcc_samples_forest_",format(Sys.time(), "%Y%m%d"), ".RDS"))
+saveRDS(list(data,constants), paste0("Data/Forest_nimbleOccData_v6_", format(Sys.time(), "%Y%m%d"), ".RDS"))
+```
+ 
+# model diagnostics
+ 
+```{r MCMCvis}
+
+library(MCMCvis)
+
+pg1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p")
+
+# summary of estimates
+(mySum1 <- MCMCsummary(samples, 
+            params = pg1, 
+            round = 2))
+
+# trace plots
+MCMCtrace(samples, 
+          params = pg1,
+          ind = TRUE, 
+          Rhat = TRUE, n.eff = TRUE,
+          filename = paste0("Results/", version_folder,"plots_traceDensity_pg1_forest_", format(Sys.time(), "%Y%m%d"), ".pdf"))
+
+# caterpillar plots
+MCMCplot(samples, 
+         params = pg1, # params = 'betalpsi\\[\\d{1,3}[,][ ][1]\\]', ISB = FALSE, exact = FALSE, 
+         ci = c(50, 90), 
+         HPD = FALSE)  # plots equal tailed credible intervals
+```
+
+

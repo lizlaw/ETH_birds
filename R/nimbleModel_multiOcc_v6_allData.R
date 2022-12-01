@@ -1,16 +1,19 @@
 #  "bayesBirdModel_multiSPecies_v6 - allData"
 #  author: "Liz Law"
-#  date: "22 Mar 2022
+#  date: "5 Oct 2022
 #  workingconservation@gmail.com
 
-# version log: includes species trait groups of interest
+# version log: 
+# includes species trait groups of interest
+# saves the scale factors, modified the scaling for the start time to ensure scaling around 0
 
 # Data development ----
 # Setup
 library(tidyverse)
+library(bestNormalize) # scaling factors
 
 # data location and load ----
-wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/Leuphana_Bird_Modelling/"
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds/"
 BirdData <- readRDS(paste0(wd, "Data/LandscapeBirds_cleandata.RDS"))
 
 # Note two sites only have one of the rounds
@@ -181,13 +184,25 @@ occVL_farm <- c("elevation", "slope", "farm_type", "fl_dis", "sidi1ha")
 
 OccVarsFarm <- OccVarsFarm %>% 
   filter(habitat == "FARM") %>% 
-  select(point_id, all_of(occVL_farm)) %>% 
+  select(point_id, all_of(occVL_farm)) 
+
+# library(bestNormalize)
+OccVarsFarm_scaleModels <- list(
+  elevation = bestNormalize::center_scale(OccVarsFarm$elevation),
+  slope = bestNormalize::sqrt_x(OccVarsFarm$slope, standardize = TRUE),
+  fl_dis = bestNormalize::sqrt_x(OccVarsFarm$fl_dis, standardize = TRUE),
+  sidi1ha = bestNormalize::center_scale(OccVarsFarm$sidi1ha),
+  farm_type = bestNormalize::no_transform(OccVarsFarm$farm_type) # binary
+)
+saveRDS(OccVarsFarm_scaleModels, paste0(wd, "Data/nimbleModel_multiOcc_v6_OccVarsFarm_scaleModels.RDS"))
+  
+OccVarsFarm <- OccVarsFarm %>% 
   mutate(
-    elevation = elevation %>% scale() %>% .[,1],
-    slope = sqrt(slope) %>% scale() %>% .[,1],
-    fl_dis = sqrt(fl_dis) %>% scale() %>% .[,1],
-    sidi1ha = sidi1ha %>% scale() %>% .[,1],
-    farm_type = farm_type                   # binary
+    elevation = predict(OccVarsFarm_scaleModels$elevation),
+    slope = predict(OccVarsFarm_scaleModels$slope),
+    fl_dis = predict(OccVarsFarm_scaleModels$fl_dis),
+    sidi1ha = predict(OccVarsFarm_scaleModels$sidi1ha),
+    farm_type = predict(OccVarsFarm_scaleModels$farm_type)  # binary
   ) %>% 
   select(point_id, elevation, fl_dis, sidi1ha, slope, farm_type)
 
@@ -197,9 +212,9 @@ ObsVarsFarm <- ObsVars %>%
   filter(habitat == "FARM") %>% 
   select(point_id, round, all_of(obsVL_farm)) %>% 
   mutate(
-    start = start %>% as.numeric() %>% scale() %>% .[,1],
-    start1 = poly(start, 2)[,1],
-    start2 = poly(start, 2)[,2],
+    start = start %>% as.numeric(),
+    start1 = poly(start, 2)[,1] %>% scale() %>% .[,1],
+    start2 = poly(start, 2)[,2] %>% scale() %>% .[,1],
     date = date %>% as.numeric() %>% scale() %>% .[,1],
     visibility = (visibility > 1) %>% as.numeric()      # binary
   ) %>% 
@@ -213,12 +228,22 @@ occVL_forest <- c("elevation", "forest_type", "fr_dis", "slope")
 
 OccVarsFrst <- OccVarsFrst %>% 
   filter(habitat == "FOR") %>% 
-  select(point_id, all_of(occVL_forest)) %>% 
+  select(point_id, all_of(occVL_forest)) 
+
+OccVarsFrst_scaleModels <- list(
+  elevation = bestNormalize::center_scale(OccVarsFrst$elevation),
+  slope = bestNormalize::sqrt_x(OccVarsFrst$slope, standardize = TRUE),
+  fr_dis = bestNormalize::sqrt_x(OccVarsFrst$fr_dis, standardize = TRUE),
+  forest_type = bestNormalize::no_transform(OccVarsFrst$forest_type) # binary
+  )
+saveRDS(OccVarsFrst_scaleModels, paste0(wd, "Data/nimbleModel_multiOcc_v6_OccVarsFrst_scaleModels.RDS"))
+
+OccVarsFrst <- OccVarsFrst %>%
   mutate(
-    elevation = elevation %>% scale() %>% .[,1],
-    slope = sqrt(slope) %>% scale() %>% .[,1],
-    fr_dis = sqrt(fr_dis) %>% scale() %>% .[,1],
-    forest_type = forest_type                   # binary
+    elevation = predict(OccVarsFrst_scaleModels$elevation),
+    slope = predict(OccVarsFrst_scaleModels$slope),
+    fr_dis = predict(OccVarsFrst_scaleModels$fr_dis),
+    forest_type = predict(OccVarsFrst_scaleModels$forest_type) # binary
   ) %>% 
   select(point_id, elevation, fr_dis, slope, forest_type)
 
@@ -228,9 +253,9 @@ ObsVarsFrst <- ObsVars %>%
   filter(habitat == "FOR") %>% 
   select(point_id, round, all_of(obsVL_forest)) %>% 
   mutate(
-    start = start %>% as.numeric() %>% scale() %>% .[,1],
-    start1 = poly(start,2)[,1],
-    start2 = poly(start,2)[,2],
+    start = start %>% as.numeric(),
+    start1 = poly(start, 2)[,1] %>% scale() %>% .[,1],
+    start2 = poly(start, 2)[,2] %>% scale() %>% .[,1],
     date = date %>% as.numeric() %>% scale() %>% .[,1],
     n_observers = (n_observers > 1) %>% as.numeric()      # binary
   ) %>% 
@@ -308,6 +333,6 @@ saveRDS(list(version="allData_v6",
              OccVarsFarm=OccVarsFarm,
              ObsVarsFarm=ObsVarsFarm,
              sppTraits=sppTraits),
-        paste0(wd, "nimbleMultiOcc/nimbleModel_multiOcc_v6_allData.RDS")
+        paste0(wd, "Data/nimbleModel_multiOcc_v6_allData.RDS")
 )
 

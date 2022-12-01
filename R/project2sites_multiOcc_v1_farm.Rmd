@@ -1,0 +1,169 @@
+---
+title: "Untitled"
+author: "Liz Law"
+date: "2022-10-17"
+output: html_document
+---
+# project the model across the sampled sites
+
+Setup libraries
+```{r}
+library(tidyverse)
+
+```
+
+Setup data
+```{r}
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds"
+results_folder <- paste0(wd, "/Results/")  
+version_folder <- "v9/"
+mydate <- 20221017
+samples <- readRDS(paste0(results_folder, version_folder, "BirdOccMod_dOcc_samples_farm_", mydate, ".RDS"))
+data_input <- readRDS(paste0(wd, "/Data/Farm_nimbleOccData_v6_", mydate, ".RDS"))
+list2env(data_input[[1]], envir = .GlobalEnv); list2env(data_input[[2]], envir = .GlobalEnv); rm(data_input)
+```
+
+Project to the sites
+```{r}
+# site Xoc and Xob are our predictors 
+Xoc; Xob
+values_to_predict <- Xoc
+# site Xoc and Xob are our predictors 
+# Xoc; Xob
+values_to_predict <- Xoc
+
+# define the (max) number of samples we want to draw
+nsamples <- 1000
+
+# join all the chains and select draw
+# viewing the posterior, samples from 250 to 1250 seem most stable.
+mydraw <- 501:1500
+posterior_matrix <- rbind(samples$chain1[mydraw, ], samples$chain2[mydraw, ], samples$chain3[mydraw, ]) 
+set.seed <- 123
+mydraw <- sample(1:nrow(posterior_matrix), size=min(nsamples, nrow(posterior_matrix)), replace = FALSE)
+posterior_matrix <- posterior_matrix[mydraw,]  
+
+# cell, species, sample matrix
+array_NA <- array(data = NA, dim = c(nrow(values_to_predict), M, nrow(posterior_matrix)))
+
+# for each species, pull out the intercepts, betalpsi 1, 2, and 3
+out_lpsi <- array_NA
+out_lp <- array_NA
+out_betalpsi1 <- array_NA
+out_betalpsi2 <- array_NA
+out_betalpsi3 <- array_NA
+for (k in 1:dim(array_NA)[2]) {
+          out_lpsi[, k, ] <- posterior_matrix[, colnames(posterior_matrix) %in% 
+                                                     paste0("lpsi", "[", k, 
+                                                            "]")]
+          out_lp[, k, ] <- posterior_matrix[, colnames(posterior_matrix) %in% 
+                                                     paste0("lp", "[", k, 
+                                                            "]")]
+          out_betalpsi1[, k, ] <- posterior_matrix[, colnames(posterior_matrix) %in% 
+                                                     paste0("betalpsi", "[", k, 
+                                                            ", 1]")]
+          out_betalpsi2[, k, ] <- posterior_matrix[, colnames(posterior_matrix) %in% 
+                                                     paste0("betalpsi", "[", k, 
+                                                            ", 2]")]
+          out_betalpsi3[, k, ] <- posterior_matrix[, colnames(posterior_matrix) %in% 
+                                                     paste0("betalpsi", "[", k, 
+                                                            ", 3]")]
+}
+# for each observation variable, we have one betalp
+out_betalp1 <- array_NA
+out_betalp2 <- array_NA
+out_betalp3 <- array_NA
+out_betalp1[] <- rep(posterior_matrix[, "betalp[1]"], each = (nrow(values_to_predict)*M))
+out_betalp2[] <- rep(posterior_matrix[, "betalp[2]"], each = (nrow(values_to_predict)*M))
+out_betalp3[] <- rep(posterior_matrix[, "betalp[3]"], each = (nrow(values_to_predict)*M))
+
+# now we can combine these to get logit.psi for each species
+# row, species, sample matrix
+
+out_logitpsi <- out_lpsi  +
+  out_betalpsi1 * values_to_predict[,1] + 
+  out_betalpsi2 * values_to_predict[,2] +
+  out_betalpsi3 * values_to_predict[,3] 
+
+# convert to psi 
+out_psi <- exp(out_logitpsi)/(exp(out_logitpsi) + 1)
+out_z <- apply(out_psi, c(1,2,3), function(x){rbernoulli(1, p=x)}) # random
+
+# we can also get the estimates of observed species at each site for each event
+
+out_logitp_v1 <- out_lp  +
+  out_betalp1 * Xob[,1,1] + 
+  out_betalp2 * Xob[,1,2] +
+  out_betalp3 * Xob[,1,3] 
+out_logitp_v2 <- out_lp  +
+  out_betalp1 * Xob[,2,1] +
+  out_betalp2 * Xob[,2,2] +
+  out_betalp3 * Xob[,2,3] 
+
+
+out_p_v1 <- exp(out_logitp_v1)/(exp(out_logitp_v1) + 1)
+out_d_v1 <- apply(out_p_v1, c(1,2,3), function(x){rbernoulli(1, p=x)}) # random
+out_p_v2 <- exp(out_logitp_v2)/(exp(out_logitp_v2) + 1)
+out_d_v2 <- apply(out_p_v2, c(1,2,3), function(x){rbernoulli(1, p=x)}) # random
+
+
+## observed (occupancy + detection)
+#Y[i,j,k] ~ dbern(z[i,k] * p[i,j,k]) 
+out_Y_v1 <- out_psi * out_p_v1
+out_Y_v2 <- out_psi * out_p_v2  
+
+out_Y_sum <- apply(out_Y_v1 + out_Y_v2, c(1,2,3), function(x)(min(x, 1))) # (summed chances of seeing it, max is 1)
+
+# Derived quantities
+# site, species, sample matrix
+# sum the species for each site, and sample, then average over the samples (can use psi for this)
+SR_site_all <- apply(out_psi, c(1,3), sum) %>% apply(., 1, mean)               # Number of occurring species at each site
+SR_site_obs <- apply(out_psi[,1:Nobs,],  c(1,3), sum) %>% apply(., 1, mean)    # observed species only  
+SR_site_fspp <- apply(out_psi[,which(fspp==TRUE),],  c(1,3), sum) %>% apply(., 1, mean)          # forest dependent species
+SR_site_mig <- apply(out_psi[,which(mig==TRUE),],  c(1,3), sum) %>% apply(., 1, mean)           # migrants
+SR_site_fnDiet <- apply(out_psi[,which(fnDiet==TRUE),],  c(1,3), sum) %>% apply(., 1, mean)       # fruit/nectar species
+SR_site_invDiet <- apply(out_psi[,which(invDiet==TRUE),],  c(1,3), sum) %>% apply(., 1, mean)     # invertebrate species
+
+hist(SR_site_all)
+range(SR_site_all)
+
+actual_site_obs <- apply((apply(Y, c(1,3), sum) > 0)*1, 1, sum) # quite low!
+pred_site_obs <- apply(out_Y_sum[,1:Nobs,], c(1,3), sum) %>% apply(., 1, mean)   # only the observed species
+plot(pred_site_obs ~ actual_site_obs); abline(a=0,b=1,lty=3) # in the right ball park 
+
+# observability of species per visit is quite low
+(sp_visit1 <- apply(out_p_v1, 2, mean))
+(sp_visit2 <- apply(out_p_v2, 2, mean))
+plot(sort(sp_visit1), col="grey", type="l", lwd=3, ylim=c(min(c(sp_visit1,sp_visit2)),max(c(sp_visit1,sp_visit2)))); points(sort(sp_visit2), type="l", lwd=3)
+
+# mean observability per site is quite low
+(si_visit1 <- apply(out_p_v1, 1, mean))
+(si_visit2 <- apply(out_p_v2, 1, mean))
+hist(si_visit1); hist(si_visit2)
+plot(sort(si_visit1), col="grey", type="l", lwd=3, ylim=c(min(c(si_visit1,si_visit2)),max(c(si_visit1,si_visit2)))); points(sort(si_visit2), type="l", lwd=3)
+
+# plot of start time
+tibble(obs = c(apply(Y, c(1,2), sum)),
+       start = c(Xob[,,2])) %>% 
+  ggplot(., aes(x=start, y=obs)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", formula = y~poly(x,2)) + 
+  theme_classic()
+# plot of date
+tibble(obs = c(apply(Y, c(1,2), sum)),
+       date = c(Xob[,,1])) %>% 
+  ggplot(., aes(x=date, y=obs)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", formula = y~x) + 
+  theme_classic()
+
+# plot of elev
+tibble(obs = c(apply(Y, c(1), sum)),
+       elev = c(Xoc[,1])) %>% 
+  ggplot(., aes(x=elev, y=obs)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", formula = y~x) + 
+  theme_classic()
+
+```
+

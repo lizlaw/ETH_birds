@@ -1,0 +1,145 @@
+---
+title: "Project farm model to raster"
+author: "Liz Law"
+date: "2022-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# setup
+```{r}
+library(tidyverse)
+library(terra)
+library(bestNormalize)
+library(foreach)
+library(doParallel)
+library(tictoc)  # timer for code development
+```
+
+# data
+```{r}
+
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds"
+results_folder <- paste0(wd, "/Results/")  
+version_folder <- "v9/"
+mydate <- 20221017
+samples <- readRDS(paste0(results_folder, version_folder, "BirdOccMod_dOcc_samples_farm_", mydate, ".RDS"))
+data_input <- readRDS(paste0(wd, "/Data/Farm_nimbleOccData_v6_", mydate, ".RDS"))
+list2env(data_input[[1]], envir = .GlobalEnv); list2env(data_input[[2]], envir = .GlobalEnv); rm(data_input)
+
+# base_farm_stack_raw <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/resampled_data/base_farm_stack_300m.tif")
+# don't have sidi1ha
+farm_stack <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/resampled_data/farm_stack_300m.tif")
+farm_template <- (farm_stack[[1]]+farm_stack[[2]]+farm_stack[[6]])*0 + 1
+
+OccVarsFarm_scaleModels <- readRDS("~/Desktop/LeuphanaProject/BirdModelling/ETH_birds/Data/nimbleModel_multiOcc_v6_OccVarsFarm_scaleModels.RDS")
+```
+
+# extract and transform the variables
+```{r}
+# first, we need to extract then transform the raster variables 
+values_to_predict <- terra::values(farm_stack[[c(1,2,6)]], na.rm=FALSE, dataframe = TRUE) 
+values_to_predict$cellID <- 1:nrow(values_to_predict)
+values_to_predict <- values_to_predict[complete.cases(values_to_predict),]
+
+# transform
+values_to_predict <- values_to_predict %>% 
+  mutate(elevation = predict(OccVarsFarm_scaleModels$elevation,
+                             newdata = elevation),
+         fldis = predict(OccVarsFarm_scaleModels$fl_dis,
+                             newdata = fldis),
+         sidi1ha = predict(OccVarsFarm_scaleModels$sidi1ha,
+                             newdata = sidi1ha)
+  ) %>% as.matrix(.)
+
+```
+
+# project
+```{r}
+# cell, species, sample array, and cell x sample matrix
+nCells <- nrow(values_to_predict)
+startSamples <- 501
+nSamples <- 250
+array_NA <- array(data = NA, dim = c(nCells, nSamples, M))  # all species
+myMatrix <- function(x){matrix(data = x, nrow = nCells, ncol = nSamples, byrow = FALSE)}
+acomb <- function(...) abind::abind(..., along=3)
+
+# for each species, pull out the intercepts, the betalpsi 1, 2, and 3
+tic("method 1")
+#out_z <- array_NA
+cl <- makeCluster(4)
+registerDoParallel(cl)
+out_psi <- foreach (k = 1:M, 
+                    .combine = 'acomb', .multicombine = TRUE, .maxcombine = M
+                         ) %dopar% {
+        # select draw from each chain
+        mydraw <- startSamples:(startSamples+nSamples)
+        posterior_matrix <- rbind(samples$chain1[mydraw, ], samples$chain2[mydraw, ], samples$chain3[mydraw, ]) 
+
+        out_logitpsi <- myMatrix(posterior_matrix[, paste0("lpsi", "[", k, "]")])  +
+          myMatrix(posterior_matrix[, paste0("betalpsi", "[", k, ", 1]")]) * values_to_predict[,1] + 
+          myMatrix(posterior_matrix[, paste0("betalpsi", "[", k, ", 2]")]) * values_to_predict[,2] +
+          myMatrix(posterior_matrix[, paste0("betalpsi", "[", k, ", 3]")]) * values_to_predict[,3] 
+        
+        #out_psi[, k,] <- 
+        exp(out_logitpsi)/(exp(out_logitpsi) + 1)
+}
+                           
+stopCluster(cl)
+toc()
+# method 1: 976.777 sec elapsed for 750 samples
+```
+
+# save results
+```{r}
+saveRDS(out_psi, paste0(results_folder, version_folder, "BirdOccMod_dOcc_psi_farmRaster_300m", mydate, ".RDS"))
+```
+
+# derived quantities
+```{r}
+# site, sample, species matrix
+# sum the species for each site x sample, then average over the samples
+
+SR_site_all <- apply(out_psi, c(1,2), sum) %>% apply(., 1, mean)             # Number of occurring species at each site (sum of psi)
+SR_site_tobs <- apply(out_psi[,,1:Nobs],  c(1,2), sum) %>% apply(., 1, mean)     # Number of observed species occurring at each site (i.e. not including the non-observed species)
+SR_site_fspp <- apply(out_psi[,,which(fspp==TRUE)],  c(1,2), sum) %>% apply(., 1, mean)          # forest dependent species
+SR_site_mig <- apply(out_psi[,,which(mig==TRUE)],  c(1,2), sum) %>% apply(., 1, mean)           # migrants
+SR_site_fnDiet <- apply(out_psi[,,which(fnDiet==TRUE)],  c(1,2), sum) %>% apply(., 1, mean)       # fruit/nectar species
+SR_site_invDiet <- apply(out_psi[,,which(invDiet==TRUE)],  c(1,2), sum) %>% apply(., 1, mean)     # invertebrate species
+```
+
+# convert to raster
+```{r}
+insert2raster <- function(x, 
+                          name=deparse(substitute(x)), 
+                          template = farm_template,
+                          cells = values_to_predict[,"cellID"]){
+  out <- template
+  out[cells] <- x
+  names(out) <- name
+  return(out)
+}
+
+SR_site_all_raster <- insert2raster(SR_site_all)
+SR_site_fspp_raster <- insert2raster(SR_site_fspp)
+SR_site_mig_raster <- insert2raster(SR_site_mig)
+SR_site_fnDiet_raster <- insert2raster(SR_site_fnDiet)
+SR_site_invDiet_raster <- insert2raster(SR_site_invDiet)
+
+SR_site_farm_stack <- rast(list(SR_site_all_raster, SR_site_fspp_raster, SR_site_mig_raster,
+                                SR_site_fnDiet_raster, SR_site_invDiet_raster))
+
+writeRaster(SR_site_farm_stack, paste0(results_folder, version_folder, "BirdOccMod_dOcc_SRsite_farmRaster_300m", mydate, ".tif"), overwrite=TRUE)
+
+plot(SR_site_farm_stack[[1]])
+plot(SR_site_farm_stack[[2:5]])
+
+mean(SR_site_all); range(SR_site_all)
+mean(SR_site_fspp); range(SR_site_fspp)
+mean(SR_site_mig); range(SR_site_mig)
+mean(SR_site_fnDiet); range(SR_site_fnDiet)
+mean(SR_site_invDiet); range(SR_site_invDiet)
+```
