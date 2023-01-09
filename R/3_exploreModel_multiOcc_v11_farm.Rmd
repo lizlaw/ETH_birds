@@ -1,0 +1,431 @@
+---
+title: "Examine FARM models and their projections v11"
+author: "Liz Law"
+date: "`r Sys.Date()`"
+output: html_document
+---
+workingconservation@gmail.com
+
+# Setup libraries
+```{r setup 1, message=FALSE}
+
+library(tidyverse)
+library(terra)
+library(MCMCvis)
+
+# ggplot theme set
+theme_set(theme_bw())
+```
+
+# setup data
+```{r setup 2}
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds"
+results_folder <- paste0(wd, "/Results/")  
+version_folder <- "v11/"
+version_date <- 20221220
+data_version <- "v7"
+
+samples <- readRDS(paste0(results_folder, version_folder, "BirdOccMod_dOcc_samples_farm_", version_date, "_seed101.RDS"))
+data_input <- readRDS(paste0(wd, "/Data/Farm_nimbleOccData_", data_version,"_", version_date, ".RDS"))
+list2env(data_input[[1]], envir = .GlobalEnv); list2env(data_input[[2]], envir = .GlobalEnv); rm(data_input)
+
+farm_stack <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_stacks/farm_stack_10m_Baseline.tif")
+pred_stack <- rast(paste0(results_folder, version_folder, "/Baseline/farm_pred_stack_10m_Baseline.tif"))
+
+# groups of interest
+sppTraits <- readRDS(paste0(wd, "/Data/nimbleModel_multiOcc_", data_version, "_allData.RDS"))$sppTraits
+```
+
+# extract species traits
+Note these have been binary summaries from the full species traits. We could go back to the more detailed categories, if required, they are in this data.
+```{r extract species traits}
+sppTraits <- left_join(
+  tibble(species_code = dimnames(Y)[[3]][1:Nobs]),
+  sppTraits
+) %>% 
+  mutate(tnObs = apply(Y, 3, sum)[1:Nobs],
+         size = as.numeric(size),
+         logsize = log(size),
+         sizeClass = cut(size, breaks = c(0, 15, 40, 80, 500, Inf), 
+                         labels = c("<15g", "15<40g", "40<80g", "80-500g", ">500g"))
+  ) %>% 
+  mutate(
+    forDep = factor(forDep, 
+                    levels = c("does not occur in forest", "low", "medium", "high", "unknown"),
+                    labels = c("does not occur in forest", "low", "medium", "high", "unknown")),
+    for_strat5levels = factor(for_strat5levels, 
+                    levels = c("water", "water/ground", "ground", "ground/understory", "understory",
+                               "understory/midhigh", "midhigh", "midhigh/canopy", "canopy",
+                               "understory/canopy", "ground/midhigh", "generalist",
+                               "no data"),
+                    labels = c("low", "low", "low", "low", "low",
+                               "mid", "mid", "high", "high",
+                               "generalist", "generalist", "generalist",
+                               "unknown")),
+    
+  )
+```
+
+# site vars vs raster vars
+```{r summarise vars}
+rast_vals <- values(pred_stack, na.rm=TRUE) %>% as_tibble()
+site_vals <- as_tibble(Xoc) %>% setNames(names(rast_vals))
+
+summarise_all(rast_vals, range) %>% t()
+summarise_all(site_vals, range) %>% t()
+```
+
+# Plot histograms
+Site sampled variables (green) are typically a biased sub-section of the range of variables in the rasters (purple). This is not as much of an issue as in forest.
+```{r var histograms}
+plot_hists <- function(myvar, binwidth=0.25){
+  mc <- viridis::viridis(3)
+  ggplot(rast_vals, aes(x={{myvar}}, y = stat(density))) +
+    geom_histogram(binwidth = binwidth, fill=mc[1], alpha = 0.5) + 
+    geom_histogram(data = site_vals, binwidth = binwidth, fill=mc[2], alpha = 0.5)
+}
+# "elevation1" "elevation2" "farm_85"    "fl_dis"     "sidi1ha"    "slope"  
+plot_hists(elevation1)
+plot_hists(elevation2)
+plot_hists(farm_85, binwidth = 1)
+plot_hists(fl_dis)
+plot_hists(sidi1ha)
+plot_hists(slope)
+
+```
+
+# Examine betalpsi parameters from each species 
+
+```{r species betas}
+# select a reasonable set of samples 
+mydraw <- seq(0, dim(samples$chain1)[1], 1000)
+mysamples <- list(
+  chain1 = samples$chain1[mydraw, ],
+  chain2 = samples$chain2[mydraw, ],
+  chain3 = samples$chain3[mydraw, ]
+)
+
+# extract betas "elevation1" "elevation2" "farm_85"    "fl_dis"     "sidi1ha"    "slope"  
+b0 <- MCMCsummary(mysamples, 
+                  params = 'lpsi\\[\\d{1,3}\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b1 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][1]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b2 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][2]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b3 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][3]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b4 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][4]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b5 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][5]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+b6 <- MCMCsummary(mysamples, 
+                  params = 'betalpsi\\[\\d{1,3}[,][ ][6]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+
+tibble(
+  Elevation1Mean = sum(b1$mean > 0), Elevation1Median = sum(b1$`50%`>0),
+  Elevation2Mean = sum(b2$mean > 0), Elevation2Median = sum(b2$`50%`>0),
+  Farm85Mean = sum(b3$mean > 0), Farm85Median = sum(b3$`50%`>0),
+  FarmDistanceMean = sum(b4$mean > 0), FarmDistanceMedian = sum(b4$`50%`>0),
+  Sidi1haMean = sum(b5$mean > 0), Sidi1haMedian = sum(b5$`50%`>0),
+  SlopeMean = sum(b6$mean > 0), SlopeMedian = sum(b6$`50%`>0)
+) %>% t %>% 
+  as_tibble(rownames = "SummaryType") %>% 
+  rename(Positive=V1) %>% 
+  mutate(Negative=M-Positive)
+  
+```
+
+Plot the betalpsi params 
+```{r plot beta catterpillars}
+plotbeta <- function(bp, bname, fgroup=NULL, fgroupName="All species"){
+  bp <- bind_cols(bp, 
+                  fspp=c(sppTraits$forSpec, rep("unknown", Nadd)), 
+                  mig=c(sppTraits$migYes, rep("unknown", Nadd)),
+                  fnDiet=c(sppTraits$FruiNect, rep("unknown", Nadd)),
+                  invDiet=c(sppTraits$Invertebrate, rep("unknown", Nadd)),
+                  sumObs1=c(sppTraits$sumObs1, rep("unknown", Nadd)),
+                  forDep=c(sppTraits$forDep, rep("unknown", Nadd)),
+                  for_strat5levels=c(sppTraits$for_strat5levels, rep("unknown", Nadd)),
+                  diet_5cat=c(sppTraits$diet_5cat, rep("unknown", Nadd)),
+                  sizeClass=c(sppTraits$sizeClass, rep("unknown", Nadd)),
+                  tnObs=c(sppTraits$tnObs, rep(0, Nadd))
+                  )
+  
+  ggplot(arrange(bp,`50%`, mean), 
+         aes(x=`50%`, xmin=`2.5%`, xmax=`97.5%`,
+             y=1:M))+
+    geom_linerange(aes(color={{fgroup}}))+
+    geom_point(aes(x=mean), color="darkgrey")+
+    geom_point(aes(color={{fgroup}}))+
+    geom_vline(xintercept=0, color="red")+
+    geom_vline(xintercept=mean(bp$mean), color="red", lty=2)+
+    geom_vline(xintercept=mean(bp$`50%`), color="red", lty=3)+
+    scale_color_viridis_d()+
+    labs(x=paste0(bname," beta parameter:\n95% HDI (lines), mean (grey points), median (color points)"),
+         y="Species, sorted by median beta",
+         color = fgroupName)+
+    theme(axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())
+}
+
+plotbeta(b1, "Elevation1", fspp, "Forest species")
+plotbeta(b2, "Elevation2", fspp, "Forest species")
+plotbeta(b3, "Farm 85 (new=0)", fspp, "Forest species")
+plotbeta(b4, "Farm distance", fspp, "Forest species")
+plotbeta(b5, "Landscape diversity (sidi1ha)", fspp, "Forest species")
+plotbeta(b6, "Slope", fspp, "Forest species")
+
+```
+Notes: We can see in the above how the gaussian distributions are indeed generated by the model. However, they don't well align with some of our species groups, as we might expect, likely due to the 'poor' data. Therefore I would very much caution using this for a single species -- maybe even also for the species specific groups? 
+
+
+Plot beta relationships - more common species in darker colours (purple), rare species in lighter colours (yellow)
+```{r plot beta relationships}
+newdata <- tibble(
+  elevation1 = seq(min(rast_vals$elevation1), max(rast_vals$elevation1), length.out=100) %>% rep(2),
+  mElevation1 = mean(rast_vals$elevation1),
+  elevation2 = scales::rescale(elevation1^2, to=c(min(rast_vals$elevation2), max(rast_vals$elevation2))), # is parabola
+  mElevation2 = min(rast_vals$elevation2), # will be the minimum at mean elevation (i.e. zero)
+  fl_dis = seq(min(rast_vals$fl_dis), max(rast_vals$fl_dis), length.out=100) %>% rep(2),
+  mFldis = mean(rast_vals$fl_dis),
+  sidi1ha = seq(min(rast_vals$sidi1ha), max(rast_vals$sidi1ha), length.out=100) %>% rep(2),
+  mSidi1ha = mean(rast_vals$sidi1ha),
+  slope = seq(min(rast_vals$slope), max(rast_vals$slope), length.out=100) %>% rep(2),
+  mSlope= mean(rast_vals$slope),
+  farm_type = rep(0:1, each = 100)
+)
+
+elev_psi <- matrix(data=NA, nrow = nrow(newdata), ncol = M)
+for(k in 1:M){
+  logitpsi <- b0$mean[k]  +
+    b1$mean[k] * newdata$elevation1 + # for both 
+    b2$mean[k] * newdata$elevation2 + # elevations
+    b3$mean[k] * newdata$farm_type + 
+    b4$mean[k] * newdata$mFldis +
+    b5$mean[k] * newdata$mSidi1ha +
+    b6$mean[k] * newdata$mSlope 
+  
+  elev_psi[,k] <- exp(logitpsi)/(exp(logitpsi) + 1)
+}
+
+fl_dis_psi <- matrix(data=NA, nrow = nrow(newdata), ncol = M)
+for(k in 1:M){
+  logitpsi <- b0$mean[k]  +
+    b1$mean[k] * newdata$mElevation1 + 
+    b2$mean[k] * newdata$mElevation2 + 
+    b3$mean[k] * newdata$farm_type + 
+    b4$mean[k] * newdata$fl_dis +
+    b5$mean[k] * newdata$mSidi1ha +
+    b6$mean[k] * newdata$mSlope 
+  
+  fl_dis_psi[,k] <- exp(logitpsi)/(exp(logitpsi) + 1)
+}
+
+sidi_psi <- matrix(data=NA, nrow = nrow(newdata), ncol = M)
+for(k in 1:M){
+  logitpsi <- b0$mean[k]  +
+    b1$mean[k] * newdata$mElevation1 + 
+    b2$mean[k] * newdata$mElevation2 + 
+    b3$mean[k] * newdata$farm_type + 
+    b4$mean[k] * newdata$mFldis +
+    b5$mean[k] * newdata$sidi1ha +
+    b6$mean[k] * newdata$mSlope 
+  
+  sidi_psi[,k] <- exp(logitpsi)/(exp(logitpsi) + 1)
+}
+
+slope_psi <- matrix(data=NA, nrow = nrow(newdata), ncol = M)
+for(k in 1:M){
+  logitpsi <- b0$mean[k]  +
+    b1$mean[k] * newdata$mElevation1 + 
+    b2$mean[k] * newdata$mElevation2 + 
+    b3$mean[k] * newdata$farm_type + 
+    b4$mean[k] * newdata$mFldis +
+    b5$mean[k] * newdata$mSidi1ha +
+    b6$mean[k] * newdata$slope 
+  
+  slope_psi[,k] <- exp(logitpsi)/(exp(logitpsi) + 1)
+}
+
+## compile into one table
+out_psi <- elev_psi %>% 
+  as_tibble() %>% 
+  bind_cols(newdata) %>% 
+  pivot_longer(cols = V1:V127, names_to = "species", values_to = "elev_psi") %>% 
+  mutate(species = str_replace(species, "V", "sp"),
+         species = factor(species, levels = paste0('sp',1:M))) %>% 
+  bind_cols(
+    fl_dis_psi %>% 
+      as_tibble() %>% 
+      pivot_longer(cols = V1:V127, names_to = "species", values_to = "fl_dis_psi") %>% 
+      select(-species)
+  ) %>% 
+    bind_cols(
+    sidi_psi %>% 
+      as_tibble() %>% 
+      pivot_longer(cols = V1:V127, names_to = "species", values_to = "sidi_psi") %>% 
+      select(-species)
+  ) %>% 
+    bind_cols(
+    slope_psi %>% 
+      as_tibble() %>% 
+      pivot_longer(cols = V1:V127, names_to = "species", values_to = "slope_psi") %>% 
+      select(-species)
+  ) %>% 
+  add_column(
+    b1 = rep(b1$mean, 200),
+    b2 = rep(b2$mean, 200),
+    b3 = rep(b3$mean, 200),
+    b4 = rep(b4$mean, 200),
+    b5 = rep(b5$mean, 200),
+    b6 = rep(b6$mean, 200),
+    fspp = rep(c(sppTraits$forSpec, rep(FALSE, Nadd)),200), 
+    fnDiet=rep(c(sppTraits$FruiNect, rep(FALSE, Nadd)),200), 
+    invDiet=rep(c(sppTraits$Invertebrate, rep(FALSE, Nadd)),200),
+    observed=rep(c(rep("observed", Nobs), rep("absent", Nadd)), 200)
+  ) %>% 
+  mutate(fspp = if_else(fspp==TRUE, "fspp", "other"),
+         fnDiet = if_else(fnDiet==TRUE, "fnDiet", "other"),
+         invDiet = if_else(invDiet==TRUE, "invDiet", "other"))
+
+plotpsi <- function(xvar, yvar, xname, yname, oxmin=-Inf, oxmax=Inf){
+  ggplot(out_psi, 
+         aes(x={{xvar}}, y={{yvar}}, color=species)) +
+    # add rectangles showing non-sampled projection area
+    annotate("rect", xmin = -Inf, xmax = oxmin, ymin = -Inf, ymax = Inf, 
+             alpha =0.3)+
+    annotate("rect", xmin = oxmax, xmax = Inf, ymin = -Inf, ymax = Inf, 
+             alpha =0.3)+
+    geom_line(alpha=0.5) + 
+    scale_color_viridis_d()+
+    theme(legend.position = "none") +
+    facet_grid(.~farm_type, labeller =label_both)+
+    labs(x=xname, y=yname)
+}
+
+plotpsi(elevation1, elev_psi, 
+        "Elevation (center scaled, other vars at mean)", "psi", 
+        min(site_vals$elevation1), max(site_vals$elevation1))
+
+plotpsi(fl_dis, fl_dis_psi, 
+        "Farm distance (center scaled, other vars at mean)", "psi", 
+        min(site_vals$fl_dis), max(site_vals$fl_dis))
+
+plotpsi(sidi1ha, sidi_psi, 
+        "Landscape diversity (sidi1ha center scaled, other vars at mean)", "psi", 
+        min(site_vals$sidi1ha), max(site_vals$sidi1ha))
+
+plotpsi(slope, slope_psi, 
+        "Slope (center scaled, other vars at mean)", "psi", 
+        min(site_vals$slope), max(site_vals$slope))
+
+```
+Sum species over the parameters
+```{r plot SR relationships}
+
+plotSR <- function(xvar, y, xname, yname, oxmin=-Inf, oxmax=Inf){
+  bind_cols(
+    newdata,
+    SR = rowSums(y),
+    SRfspp = rowSums(y[,fspp]),
+    SRmig = rowSums(y[,mig]),
+    SRfnDiet = rowSums(y[,fnDiet]),
+    SRinvDiet = rowSums(y[,invDiet])
+  ) %>% 
+    pivot_longer(cols = SR:SRinvDiet, names_to = "SpeciesSelection", values_to = "SR") %>% 
+  ggplot(., 
+         aes(x={{xvar}}, y=SR, color=SpeciesSelection), lwd=2) +
+    # add rectangles showing non-sampled projection area
+    annotate("rect", xmin = -Inf, xmax = oxmin, ymin = -Inf, ymax = Inf, 
+             alpha =0.3)+
+    annotate("rect", xmin = oxmax, xmax = Inf, ymin = -Inf, ymax = Inf, 
+             alpha =0.3)+
+    geom_line() + 
+    facet_grid(.~farm_type, labeller =label_both)+
+    scale_color_viridis_d()+
+    labs(x=xname, y=yname)
+}
+
+plotSR(elevation, elev_psi, 
+        "Elevation (center scaled, other vars at mean)","Species Richness (sum PSI)", 
+        min(site_vals$elevation), max(site_vals$elevation))
+
+plotSR(fl_dis, fl_dis_psi, 
+        "Farm distance (center scaled, other vars at mean)", "Species Richness (sum PSI)", 
+        min(site_vals$fl_dis), max(site_vals$fl_dis))
+
+plotSR(sidi1ha, sidi_psi, 
+        "Landscape diversity (sidi1ha center scaled, other vars at mean)", "Species Richness (sum PSI)", 
+        min(site_vals$sidi1ha), max(site_vals$sidi1ha))
+
+plotSR(slope, slope_psi, 
+        "Slope (center scaled, other vars at mean)", "Species Richness (sum PSI)", 
+        min(site_vals$slope), max(site_vals$slope))
+
+```
+
+# Probability of detection 
+```{r}
+
+MCMCsummary(mysamples, 
+                  params = "betalp",  
+                  round = 2)
+
+# extract betas for detection
+d0 <- MCMCsummary(mysamples, 
+                  params = "lp",  
+                  round = 2)
+d1 <- MCMCsummary(mysamples, 
+                  params = 'betalp\\[[1]\\]', ISB = FALSE, exact = FALSE, 
+                  round = 2)
+d2 <- MCMCsummary(mysamples, 
+                  params = 'betalp\\[[2]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+d3 <- MCMCsummary(mysamples, 
+                  params = 'betalp\\[[3]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+d4 <- MCMCsummary(mysamples, 
+                  params = 'betalp\\[[4]\\]', ISB = FALSE, exact = FALSE,  
+                  round = 2)
+
+logitp_v1 <- matrix(d0$mean, length(d0$mean), dim(Xob)[1])  +
+  d1$mean * Xob[,1,1] + 
+  d2$mean * Xob[,1,2] +
+  d3$mean * Xob[,1,3] +
+  d4$mean * Xob[,1,4] 
+logitp_v2 <- matrix(d0$mean, length(d0$mean), dim(Xob)[1])  +
+  d1$mean * Xob[,2,1] + 
+  d2$mean * Xob[,2,2] +
+  d3$mean * Xob[,2,3] +
+  d4$mean * Xob[,1,4] 
+
+p_v1 <- exp(logitp_v1)/(exp(logitp_v1) + 1)
+p_v2 <- exp(logitp_v2)/(exp(logitp_v2) + 1) 
+
+# mean probability of detection, all species, all sites, on visit 1 and visit 2
+mean(p_v1); mean(p_v2)
+
+# plot probability of detection
+tibble(
+  mean_p_v1 = rowMeans(p_v1),
+  mean_p_v2 = rowMeans(p_v2)
+) %>% 
+  arrange(-mean_p_v2, -mean_p_v1) %>% 
+  add_column(species = 1:M) %>% 
+  ggplot(., aes(x=species, ymin=mean_p_v1, ymax=mean_p_v2)) +
+  geom_hline(yintercept=mean(p_v1), color="red", lty="dotted") +
+  geom_hline(yintercept=mean(p_v2), color="red") +
+  geom_linerange() +
+  geom_point(aes(y=mean_p_v1), pch=1) +
+  geom_point(aes(y=mean_p_v2), color="black") +
+  labs(x="Species, sorted by probability of detection (visit 2)", 
+       y="Mean probability of detection over all sites\nOpen circles = visit 1; Closed circles = visit 2")
+
+```

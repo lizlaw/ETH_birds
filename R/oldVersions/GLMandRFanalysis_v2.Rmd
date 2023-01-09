@@ -1,0 +1,652 @@
+---
+title: "Bird SR analysis - GLM, RF, MuMIn"
+author: "Liz Law"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+ggplot2::theme_set(ggplot2::theme_bw())
+```
+
+# Aim
+
+Preliminary analysis to inform variables for inclusion in the Bayesian occupancy model. Candidate variables include:
+
+Occupancy variables:
+
+  * Joint: "point_id", "habitat", "elevation", "slope", "twi"
+  * Farm: "farm_type", "sidi1ha", "sidi200", "pwv1ha", "pwv500", "fl_dis", "fl_dis85"
+  * Forest: "forest_type", "fr_dis", "fr_dis85", "hli", "pwv2km"
+  
+Note, X, Y, are also available. Kebele is available but as not all kebeles are sampled this would need to be a random effect.
+  
+Observation variables:
+
+  * "habitat", "n_observers", "recording", "start", "date", "visibility", "cloud"
+  
+Note, further observation variables (canopy, understory, etc.) were collected but had too many missing variables to include in this instance. A more detailed habitat_type is also available.
+
+This analysis will:
+
+1. briefly summarise data
+2. preview variables (plot bivariate relationships, correlations)
+3. GLM analysis (stepwise selection using AIC)
+4. RF analysis 
+5. GLM analysis with RF selected variables (stepwise selection using AIC)
+6. MuMIn from top 1% of models identified from dredge of full model
+7. Summarise variables for inclusion in occupancy model
+
+# Data 
+Data are all cleaned and prepared in the sourced R script:
+```{r, message = FALSE}
+source("/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds/R/GLMandRFanalysis/GLMandRFanalysis_Data_v2.R")
+```
+
+This includes separate farm and forest data frames. All sites have 2 rounds of sampling. Farm data have `r dim(frmSR)[1]/2` sites, and Forest has `r dim(fstSR)[1]/2` sites. Start time and date were converted to numeric before being centered and scaled.  All other continuous variables (including ordinal/count variables n_observers, visibility, and cloud, but excluding X,Y) will need to be scaled and centered (after transformation).
+```{r}
+frmSR %>% summary()
+fstSR %>% summary()
+
+frmSR <- frmSR %>% 
+  mutate(habitat2 = map_chr(hab_details, ~ ifelse(.x %>% str_starts("F"), "CR", .x))) 
+
+fstSR <- fstSR %>% 
+  mutate(habitat2 = map_chr(hab_details, ~ ifelse(.x %>% str_starts("C"), "CF", "NCF"))) 
+```
+
+# Plots
+
+## Bivariate relationships with SR
+Bivariate relationships are shown with loess (y~x, red), linear (y~x, blue) and quadratic (y~poly(x,2), yellow) lines, or boxplots where appropriate. 
+
+```{r, include = FALSE}
+# Set up plot functions:
+myplot <- function(df, ...){
+  ggplot(df, aes(...)) +
+    geom_point(alpha = 0.3) +
+    geom_smooth(color = "red") + 
+    geom_smooth(method = "lm") +
+    geom_rug(alpha = 0.2)
+}
+
+mytitle <- function(x){
+  cowplot::ggdraw() + 
+    cowplot::draw_label(x, fontface = 'bold', x = 0, hjust = 0) + 
+    theme(plot.margin = margin(0, 0, 0, 7))
+}
+
+add_boxplot <- function(p, ...){
+  p + geom_boxplot(aes(...), fill = NA, width = 0.25)
+}
+add_smoothPoly <- function(p){
+  p + geom_smooth(method = "lm", formula = y ~ poly(x,2), color = "yellow")
+}
+```
+
+### Farmland
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Farmland bivariate relationships for occupancy variables"}
+## occVL_joint <- c("point_id", "kebele", "habitat", "hab_details", "X", "Y", "elevation", "slope", "twi")
+## occVL_farm <- c("farm_type", "sidi1ha", "sidi200", "pwv1ha", "pwv500", "fl_dis", "fl_dis85")
+
+
+(plt_frmocc <- cowplot::plot_grid(
+  mytitle("Farmland, occupancy variables"),
+  cowplot::plot_grid(
+    myplot(frmSR, farm_type, SR) %>% add_boxplot(group = farm_type),
+    myplot(frmSR, elevation, SR) %>% add_smoothPoly(),
+    myplot(frmSR, slope, SR) %>% add_smoothPoly(),
+    myplot(frmSR, twi, SR) %>% add_smoothPoly(),
+    myplot(frmSR, sidi1ha, SR) %>% add_smoothPoly(),
+    myplot(frmSR, sidi200, SR) %>% add_smoothPoly(),
+    myplot(frmSR, pwv1ha, SR) %>% add_smoothPoly(),
+    myplot(frmSR, pwv500, SR) %>% add_smoothPoly(),
+    myplot(frmSR, fl_dis, SR) %>% add_smoothPoly(),
+    myplot(frmSR, fl_dis85, SR) %>% add_smoothPoly(),
+    myplot(frmSR, hab_details, SR) %>% add_boxplot(group = hab_details), 
+    myplot(frmSR, habitat2, SR) %>% add_boxplot(group = habitat2),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+))
+
+```
+
+Discussion of Farmland occupancy variables: 
+
+* farm_type: unbalanced between 0:1. Median is higher but less spread for new farms (expected).
+* elevation: reasonably normal, and shows a small, negative relationship with SR (expected). No strong indication of the need for a quadratic term, but it could help extrapolation.
+* slope: skewed right, with a small, negative relationship with SR (?expected given influence on plants/farms?). No strong indication of the need for a quadratic term, but it could help extrapolation.
+* twi: skewed right, with a strong positive relationship with SR (4-5 spp difference between extremes)(?expected given influence plants/farms). No strong indication of the need for a quadratic term, but it could help extrapolation. Seems to be enough data to support the trend across the data.
+* sidi1ha: skewed right, with a small, positive relationship with SR (expected). No strong indication of the need for a quadratic term, but it could help extrapolation.
+* sidi200: reasonably normal, with a small positive linear relationship with SR (expected). Minor indication of a quadratic (highest in mid-ranges) but questionable levels of data on the extremes to support this, but it could help extrapolation.
+* pwv1ha: extremely right skewed with many observations at or near zero, with a small positive linear relationship with SR (expected). No indication of quadratic. 
+* pwv500: right skewed, with a small positive linear relationship with SR (expected). No indication of quadratic. 
+* fl_dis: right skewed, with a small negative linear relationship with SR (expected). Quadratic follows the loess line, but not well supported at the upper end.
+* fl_dis85: right skewed, with a small negative linear relationship with SR (expected). No indication of quadratic. 
+
+We may want to be careful with pwv1ha (due to skew, although relationship is our expected direction here), and twi (because of skew and strength of the relationship that we don't really expect).
+
+We may want to consider transforming slope, twi, sidi1ha, pwv500, fl_dis, and fl_dis85.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Farmland bivariate relationships for observation variables"}
+(plt_fstocc <- cowplot::plot_grid(
+  mytitle("Farmland, observation variables"),
+  cowplot::plot_grid(
+    myplot(frmSR, round, SR) %>% add_boxplot(group = round),
+    myplot(frmSR, start, SR) %>% add_smoothPoly(),
+    myplot(frmSR, date, SR) %>% add_smoothPoly(),
+    myplot(frmSR, n_observers, SR) %>% add_boxplot(group = n_observers),
+    myplot(frmSR, recording, SR) %>% add_boxplot(group = recording),
+    myplot(frmSR, visibility, SR) %>% add_boxplot(group = visibility),
+    myplot(frmSR, cloud, SR) %>% add_boxplot(group = cloud),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+))
+```
+Discussion of Farmland observation variables:
+
+* round: larger median and higher spread in second round.
+* start time: reasonably normal, quadratic (highest in mid-range) relationship indicated, although positive linear is also reasonable. 
+* date: reasonable spread, slight positive relationship with no strong indication of quadratic. 
+* n_observers: skewed to one observer, and shows a negative linear relationship (with inconsistent medians). Suggest removing.
+* recording: most observations included recording, which had a larger spread. Higher median in no recording - not expected, suggest tentative removal.
+* visibility: positive trend, with the inclusion of the highest observation. Consider making visibility binary. As breaking between 0 and 1 (here, -2) would result in unbalanced data, breaking visibility between 1 and 2 (here >=0) results in a positive trend with increasing variability and reasonable spread.
+* cloud: reasonable spread, no consistent trend, suggest removal. 
+
+### Forest
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Forest bivariate relationships for occupancy variables"}
+
+## occVL_joint <- c("point_id", "kebele", "habitat", "hab_details", "X", "Y", "elevation", "slope", "twi")
+## occVL_frst <- c("forest_type", "fr_dis", "fr_dis85", "hli", "pwv2km")
+
+(plt_fstocc <- cowplot::plot_grid(
+  mytitle("Forest, occupancy variables"),
+  cowplot::plot_grid(
+    myplot(fstSR, forest_type, SR) %>% add_boxplot(group = forest_type), 
+    myplot(fstSR, elevation, SR) %>% add_smoothPoly(),
+    myplot(fstSR, slope, SR) %>% add_smoothPoly(),
+    myplot(fstSR, twi, SR) %>% add_smoothPoly(),
+    myplot(fstSR, fr_dis, SR) %>% add_smoothPoly(),
+    myplot(fstSR, fr_dis85, SR) %>% add_smoothPoly(),
+    myplot(fstSR, hli, SR) %>% add_smoothPoly(),
+    myplot(fstSR, pwv2km, SR) %>% add_smoothPoly(),
+    myplot(fstSR, hab_details, SR) %>% add_boxplot(group = hab_details), 
+    myplot(fstSR, habitat2, SR) %>% add_boxplot(group = habitat2), 
+    labels = "auto"
+  ),
+ncol = 1, rel_heights = c(0.1, 1)
+))
+```
+
+Discussion of forest occupancy variables:
+
+* forest_type: higher median in primary forests, same spread.
+* elevation: skewed right, strong positive relationship. Quadratic not advised based on this. 
+* slope: reasonably normal, slight negative relationship. Quadratic not advised.
+* twi: skewed right, slight positive relationship. Not enough data to support quadratic in upper ranges.
+* fr_dis: skewed right, slight positive relationship. Not enough data to support quadratic in upper ranges.
+* fr_dis85: skewed right with elevated zeros, slight positive relationship. No strong support for quadratic but it could help extrapolation.
+* hli: relatively normal, no strong relationship with SR. Quadratic not advised.
+* pwv2km: skewed left, positive relationship with SR. Quadratic not advised.
+
+Consider transforming elevation, twi, distance variables, and pwv2km. 
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Forest bivariate relationships for observation variables"}
+
+(plt_fstobs <- cowplot::plot_grid(
+  mytitle("Forest, observation variables"),
+  cowplot::plot_grid(
+    myplot(fstSR, round, SR) %>% add_boxplot(group = round),
+    myplot(fstSR, start, SR) %>% add_smoothPoly(),
+    myplot(fstSR, date, SR) %>% add_smoothPoly(),
+    myplot(fstSR, n_observers, SR) %>% add_boxplot(group = n_observers),
+    myplot(fstSR, recording, SR) %>% add_boxplot(group = recording),
+    myplot(fstSR, visibility, SR) %>% add_boxplot(group = visibility),
+    myplot(fstSR, cloud, SR) %>% add_boxplot(group = cloud),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+))
+
+```
+Discussion of farmland observation variables:
+
+* round: higher in round 2. 
+* start: slight negative linear relationship with SR, quadratic probably better to capture higher mid-ranges.
+* date: strong positive relationship with SR. Quadratic might be reasonable here, but data not thick enough in extremes.
+* n_observers: negative relationship with SR, possibly expected in this case as likely more sensitive species, but with low numbers in >1 observer, and a similar spread. 
+* recording: was always made.
+* visibility: slight positive relationship, but not consistent in the medians. Consider making binary, breaking at 1-2 as in Farmland.
+* cloud: slight consistent, negative relationship, with no support for a quadratic. Consider making binary, to avoid issues with the ordinal variable, breaking in the middle gives consistent categories and captures the main trend.
+
+## Transforming variables
+Variables we'd like to consider transforming include:
+
+* Farmland occupancy: slope, twi, sidi1ha, pwv500, fl_dis, and fl_dis85
+* Forest occupancy: elevation, twi, distance variables, and pwv2km
+* Farmland observation: visibility (make binary at break 1-2)
+* Forest observation: n_observers (make binary at break 1-2), visibility (make binary at break 1-2), cloud (make binary at break 1-2)
+
+Potential transformations assessed using `bestNormalize::bestNormalize`, preferring conventional transformations where these were close to optimal
+```{r, include = FALSE}
+# check best transformations
+
+bestNormalize::bestNormalize(frmSR$slope)    ## sqrt(x+a), a = 0 
+bestNormalize::bestNormalize(frmSR$twi)      ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(frmSR$sidi1ha)  ## sqrt(x+a), a = 0
+bestNormalize::bestNormalize(frmSR$pwv500)   ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(frmSR$fl_dis)   ## log_10(x+a), a = 1 best here, but use sqrt to be consistent with other dis variables
+bestNormalize::bestNormalize(frmSR$fl_dis85) ## sqrt(x+a), a = 0
+
+bestNormalize::bestNormalize(fstSR$elevation)## log_10(x+a), a = 1
+bestNormalize::bestNormalize(fstSR$twi)      ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(fstSR$pwv2km)   ## nothing is great here, centre scale ok
+bestNormalize::bestNormalize(fstSR$fr_dis)   ## sqrt(x+a), a = 0
+bestNormalize::bestNormalize(fstSR$fr_dis85) ## sqrt(x+a), a = 0
+
+```
+
+Apply transformations:
+```{r}
+frmSR <- frmSR %>% 
+  mutate(
+    slope = sqrt(slope),
+    twi = log10(twi+1),
+    sidi1ha = sqrt(sidi1ha),
+    pwv500 = log10(pwv500+1),
+    fl_dis = sqrt(fl_dis),
+    fl_dis85 = sqrt(fl_dis85),
+    visibility = visibility > 1
+  )
+
+fstSR <- fstSR %>% 
+  mutate(
+    elevation = log10(elevation+1),
+    twi = log10(twi+1),
+    fr_dis = sqrt(fr_dis),
+    fr_dis85 = sqrt(fr_dis85),
+    n_observers = n_observers > 1,
+    visibility = visibility > 1,
+    cloud = cloud > 1
+  )
+
+```
+
+Transformed farmland vars:
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Farmland bivariate relationships for transformed variables"}
+
+cowplot::plot_grid(
+  mytitle("Farmland, transformed variables"),
+  cowplot::plot_grid(
+    myplot(frmSR, slope, SR) %>% add_smoothPoly(),
+    myplot(frmSR, twi, SR) %>% add_smoothPoly(),
+    myplot(frmSR, sidi1ha, SR) %>% add_smoothPoly(),
+    myplot(frmSR, pwv500, SR) %>% add_smoothPoly(),
+    myplot(frmSR, fl_dis, SR) %>% add_smoothPoly(),
+    myplot(frmSR, fl_dis85, SR) %>% add_smoothPoly(),
+    myplot(frmSR, visibility, SR) %>% add_boxplot(group = visibility),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+)
+
+```
+
+Discussion: all of these suggest a linear trend (not enough difference/data to support curves at extremes). twi remains quite skewed and should be treated with caution.
+
+Transformed forest vars:
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Forest bivariate relationships for transformed variables"}
+
+cowplot::plot_grid(
+  mytitle("Forest, transformed variables"),
+  cowplot::plot_grid(
+    myplot(fstSR, elevation, SR) %>% add_smoothPoly(),
+    myplot(fstSR, twi, SR) %>% add_smoothPoly(),
+    myplot(fstSR, fr_dis, SR) %>% add_smoothPoly(),
+    myplot(fstSR, fr_dis85, SR) %>% add_smoothPoly(),
+    myplot(fstSR, n_observers, SR) %>% add_boxplot(group = n_observers),
+    myplot(fstSR, visibility, SR) %>% add_boxplot(group = visibility),
+    myplot(fstSR, cloud, SR) %>% add_boxplot(group = cloud),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+)
+
+```
+
+Discussion: 
+
+* elevation retains positive relationship with SR, possibly due to reduced disturbance? Quadratic not advised here.
+* twi shows positive relationship, which may taper. Consider quadratic to capture this, but not well supported in the extremes.
+* fr_dis shows positive relationship, which could include quadratic but perhaps only to improve extrapolation.
+* fr_dis85 is positive, quadratic not advised.
+
+## Center - scale all continuous variables in both datasets
+All other continuous variables (excluding binary, X,Y) will need to be scaled and centrered in order to improve comparability in the GLMs. Also need to remove those we identified as being problematic, to prevent their further use.
+
+```{r}
+
+frmSR <- frmSR %>% 
+  # select(-pwv1ha, -twi) %>% 
+  select(-n_observers, -recording, -cloud) %>% 
+  mutate(across(c(start, date, elevation, slope, twi, sidi1ha, sidi200, pwv1ha, pwv500, fl_dis, fl_dis85),
+         ~scale(.x)[,1]))
+
+fstSR <- fstSR %>% 
+  select(-recording) %>% 
+  mutate(across(c(start, date, elevation, slope, twi, fr_dis, fr_dis85, hli, pwv2km),
+         ~scale(.x)[,1]))
+```
+
+## Correlation plots
+These show Pearson correlation using `corrplot::corrplot`
+
+### Farmland
+```{r, echo = FALSE, fig.cap = "Farmland variables - Pearson correlation"}
+corM_frm <- frmSR %>% 
+  select(-point_id, -SR, -habitat, -c(kebele:Y), -habitat2) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  cor()
+corrplot::corrplot(corM_frm, order = 'AOE', method = 'number')
+```
+
+Discussion of farmland correlations: 
+
+* round and date are highly correlated. Suggest we include date as it carries more information.
+* elevation and sidi200 have pearson correlation of -0.6... remove sidi200 as elevation is our metric of climate change (correlated with temerature)
+* pwv500m and fl_dis have pearson correlation of -0.74 ... remove pwv500 as fl_dis has better spread.
+* twi and slope have pearson correlation of -0.6 ... remove twi as slope has better spread
+
+Suggest removing round, sidi200, pwv500, twi
+
+### Forest
+```{r, echo = FALSE, fig.cap="Forest variables - Pearson correlation"}
+corM_fst <- fstSR %>% 
+  select(-point_id, -SR, -habitat, -c(kebele:Y), -habitat2) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  cor()
+corrplot::corrplot(corM_fst, order = 'AOE', method = 'number')
+```
+Discussion:
+
+* round and date have pearson correlation of 0.84. Suggest we include date as it carries more information.
+* elevation and fr_dis85 have pearson correlation of 0.63. Keep elevation as it is our climate change metric.
+* forest_type and fr_dis85 have pearson correlation of 0.73. Keep forest type, because of above
+* fr_dis and fr_dis85 have pearson correlation of 0.61. Keep fr_dis, because of above.
+* pwv2km and forest_type have pearson correlation of 0.65. keep forest_type because of above.
+* pwv2km and fr_dis have pearson correlation of 0.69. Keep fr_dis because of above.
+
+Suggest removing round, fr_dis85, and pwv2km. Possibly also twi because of uncertain trend/spread.
+
+# Summary of the variables 
+
+## Farmland
+Variables: *bold are retained*
+
+* *elevation* (optional remove due to correlation with sidi200)
+* *slope (sqrt)*
+* twi (log10(x+1), remove due to correlation with slope and poor spread)
+* *farm_type*
+* *sidi1ha(sqrt)*
+* sidi200 (remove due to correlation with elevation)
+* pwv1ha (remove due to extreme skew)
+* pwv500 (log10(x+1), remove due to correlation)
+* *fl_dis (sqrt)*
+* fl_dis85 (sqrt, remove due to correlation)
+* round (remove due to correlation)
+* *start (quadratic)*
+* *date*
+* n_observers (remove, non-informative),
+* recording (remove, unbalanced and non-informative)
+* *visibility (transform to binary)*
+* cloud (remove, non-informative)
+
+## Forest
+Variables: *bold are retained* Suggest removing round, fr_dis85, and pwv2km. 
+
+* *elevation (log10(x+1))*
+* *slope*
+* twi (log10(x+1), remove due to correlation with slope and poor spread)
+* *forest_type*
+* *fr_dis (sqrt)*
+* fr_dis85 (sqrt, remove due to correlation)
+* *hli*
+* pwv2km (remove due to correlation)
+* round (remove due to correlation)
+* *start (quadratic)*
+* *date*
+* *n_observers (transformed to binary)*
+* recording (removed, uninformative)
+* *visibility (transformed to binary)*
+* *cloud (transformed to binary)*
+
+# GLM analyses 
+Starting from the full set of variables preselected above, conduct backwards step selection using AIC.
+Initial trial with poisson with log link (glm(family=poisson)) moving to negative binomial (glmmTMB(family=negbin2)) if over dispersed.
+
+```{r}
+# Full farm formula
+fffrm <- formula(SR ~ #habitat2 +
+                  elevation + slope + farm_type + sidi1ha + fl_dis + 
+                  poly(start,2) + date + visibility)
+
+# Full forest formula
+fffst <- formula(SR ~ #habitat2 + 
+                  elevation + slope + forest_type + fr_dis + hli + 
+                  poly(start,2) + date + n_observers + visibility + cloud)
+
+```
+
+## Farm GLM
+```{r}
+m0frm <- glm(formula = fffrm, 
+             family = poisson,
+             data = frmSR)
+AER::dispersiontest(m0frm) # ok
+summary(m0frm)
+
+m0frm.s <- MASS::stepAIC(m0frm)
+AER::dispersiontest(m0frm.s) # ok
+summary(m0frm.s)  
+```
+
+Selected farm model: 
+
+* SR ~ elevation + slope + farm_type + poly(start, 2) + date
+* family = poisson
+
+## Forest 
+```{r}
+m0fst <- glm(formula = fffst, 
+             family = poisson,
+             data = fstSR)
+AER::dispersiontest(m0fst) # ok
+summary(m0fst)
+
+m0fst.s <- MASS::stepAIC(m0fst)
+AER::dispersiontest(m0fst.s) # ok
+summary(m0fst.s)  
+```
+
+Selected forest model:
+
+* SR ~ elevation + forest_type + poly(start, 2) + date
+* family = poisson
+
+# RF models 
+Random forest models, using the default parameters in the randomForest implementation, selecting variables with %IncMSE of < 5. Because this is a random process, we use 5 set.seeds, and average the results.
+
+For the random forest models these need to remove the poly terms
+```{r}
+# Full farm formula
+fffrm2 <- formula(SR ~ 
+                  elevation + slope + farm_type + sidi1ha + fl_dis + 
+                  start + date + visibility)
+
+# Full forest formula
+fffst2 <- formula(SR ~ 
+                  elevation + slope + forest_type + fr_dis + hli + 
+                  start + date + n_observers + visibility + cloud)
+```
+
+
+```{r}
+myRF <- function(seed, .formula, .data){
+  set.seed(seed)
+  nme <- paste0("%IncMSE", seed)
+  rf <- randomForest::randomForest(formula = .formula,
+                                   data = .data, 
+                                   importance = TRUE)
+  imp <- randomForest::importance(rf) 
+  
+  imp %>% 
+    as_tibble %>% 
+    add_column(variable = dimnames(imp)[[1]], .before = 1) %>% 
+    select(-IncNodePurity) %>% 
+    arrange(variable) 
+}
+
+myRFset <- function(seeds, formula, data){
+  map_dfc(seeds, ~myRF(.x, formula, data)) %>% 
+    mutate(`mean%IncMSE` = rowMeans(across(where(is.numeric)))) %>% 
+    select(variable = variable...1, `mean%IncMSE`) %>% 
+    arrange(-`mean%IncMSE`)
+}
+```
+
+## Farm 
+```{r, message = FALSE}
+myRFset(1:5, fffrm2, frmSR)
+```
+
+RF selected farm variables:
+* [>5%IncMSE]: date, start, fl_dis, elevation, farm_type
+* [<5%IncMSE]: sidi1ha
+* [<1%IncMSE]: slope, visibility
+
+## Forest
+```{r, message = FALSE}
+myRFset(1:5, fffst2, fstSR)
+```
+
+RF selected forest variables: 
+* [>5%IncMSE]: date, elevation, fr_dis, forest_type
+* [<5%IncMSE]: hli, start, twi, cloud,
+* [<1%IncMSE]: n_observers, visibility, slope
+
+# RF pre-selected GLM ----
+
+Starting from the set of variables selected in the RF, conduct backwards step selection using AIC.
+Initial trial with poisson with log link (glm(family=poisson)) moving to negative binomial (glmmTMB(family=negbin2)) if overdispersed.
+
+```{r}
+# Full farm formula
+fffrm3 <- formula(SR ~ 
+                  elevation + fl_dis + farm_type +
+                  date + poly(start,2))
+
+# Full forest formula
+fffst3 <- formula(SR ~ 
+                  elevation + fr_dis + forest_type + 
+                  date)
+
+```
+
+## Farm GLM
+```{r}
+m2frm <- glm(formula = fffrm3, 
+             family = poisson,
+             data = frmSR)
+AER::dispersiontest(m2frm) # ok
+summary(m2frm)
+
+m2frm.s <- MASS::stepAIC(m2frm)
+AER::dispersiontest(m2frm.s) # ok
+summary(m2frm.s)  
+```
+
+Selected farm model: 
+
+* SR ~ elevation + fl_dis + farm_type + date + poly(start,2)
+* family = poisson
+
+## Forest 
+```{r}
+m2fst <- glm(formula = fffst3, 
+             family = poisson,
+             data = fstSR)
+AER::dispersiontest(m2fst) # ok
+summary(m2fst)
+m2fst.s <- MASS::stepAIC(m2fst)
+AER::dispersiontest(m2fst.s) # ok
+summary(m2fst.s)  
+```
+
+Selected forest model:
+
+* SR ~ elevation + forest_type + date
+* family = poisson
+
+# MuMIn importance 
+Starting from the full model, use dredge to identify the top 10% of models. Conduct importance on these, selecting variables in at least 1/3 of the top models. 
+
+```{r, include = FALSE}
+options(na.action = na.fail)
+```
+
+## Farm 
+```{r}
+d0frm <- MuMIn::dredge(m0frm)
+d2frm <- d0frm[i=1:(0.1*nrow(d0frm)), recalc.weights = TRUE, recalc.delta = FALSE]
+MuMIn::sw(d2frm)
+nrow(d2frm)/3
+```
+
+Farm variables retained:
+date farm_type poly(start, 2) elevation fl_dis sidi1ha slope visibility
+
+## Forest 
+```{r}
+d0fst <- MuMIn::dredge(m0fst)
+d2fst <- d0fst[i=1:(0.1*nrow(d0fst)), recalc.weights = TRUE, recalc.delta = FALSE]
+MuMIn::sw(d2fst)
+nrow(d2fst)/3
+```
+
+Forest variables retained:
+date elevation forest_type poly(start, 2) slope 
+
+# Summary
+
+Selecting variables for the multi-species occupancy model based on their relationships with species richness is a pragmatic approach. Some of the relationships seen in the species richness may not translate to individual species, but due to the low number of observations, we do need to reduce the number of variables we are estimating. 
+
+*Farm variables* selected by the different approaches:
+
+*   GLM: SR ~ elevation + slope + farm_type + poly(start, 2) + date
+*   RF: SR ~ date + start + fl_dis + elevation + farm_type
+*   RF/GLM: SR ~ date + poly(start, 2) + fl_dis + elevation + farm_type
+*   MuMIn: SR ~ date + farm_type + poly(start, 2) + elevation + fl_dis + sidi1ha + slope + visibility
+
+suggest using:
+
+* *occupancy ~ elevation + slope + farm_type + fl_dis + sidi1ha*
+* *observation ~ poly(start, 2) + date + visibility*
+
+*Forest variables* selected by the different approaches:
+
+*   GLM: SR ~ elevation + forest_type + poly(start, 2) + date
+*   RF: SR ~ date + elevation + forest_type + fr_dis
+*   RF/GLM: SR ~ elevation + forest_type + date
+*   MuMIn: SR ~ date + elevation + forest_type + poly(start, 2) + slope 
+
+In the latter, n-observers was also one of the last de-selected. One to consider.
+
+suggest using:
+
+* *occupancy ~ elevation + forest_type + fr_dis + slope*
+* *observation ~ date + poly(start,2) + n_observers*

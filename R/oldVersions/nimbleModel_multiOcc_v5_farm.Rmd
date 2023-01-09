@@ -1,0 +1,285 @@
+---
+title: "bayesBirdModel_multiSPecies_v5 - FARM"
+author: "Liz Law"
+date: "10 Jan 2022"
+output: html_document
+---
+workingconservation@gmail.com
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Updates from v4:
+
+* Discussed with Chloé Nater (NINA)
+* Remove missing outcome sites
+* Species identified to genus as additional species (finalized version should compare removing these)
+* Included only FARM and select variables with transformations for this.
+
+# The model framework
+
+Define, for each species:
+
+* `y[i,j,k]` as the observation of a species `k` recorded from site `i` on visit `j`. `y` is binary.
+* `psi[i,k]` is the occupancy probability
+* `p[i,j,k]` is the detection probability
+* `z[i,k]` is the latent state of whether a site is really occupied (binary) by species `k`
+* `nSite` is the number of sites
+* `nVisits` is the number of sampling visits to each site
+* `Nobs` is the number of species observed in the study
+* `M` is the total possible species pool, such that `M` >> `Nobs` if including unseen species, M = Nobs otherwise. 
+
+*latent occupancy is linearly related to the environmental variables*
+`z[i,k] ~ dbern(psi[i,k])`
+`logit(psi[i,k]) = beta0[k] + beta1[k]*X1[i] + beta2[k]*X2[i] + ...` (plus other environmental predictors)
+
+*observed occupancy is a function of occupancy and observability, the latter linearly related to spatial/temporal variables*
+In this case, we assume only false negatives (not false positives)
+`y[i,j,k] ~ dbern(z[i,k]*p[i,j,k])`
+`logit(p[i,j,k]) = alpha0[k] + alpha1[k]*Y1[i,j] + alpha2[k]*Y2[i,j] + ...` (plus other environmental predictors)
+
+*site specific species richness, and conditional species richness*
+SR[i] = sum(psi[i,1:k])    # sum over k
+SR_cond[i] = sum(z[i,1:k]) # sum over k for predictions conditional on the data observed at surveyed sites
+
+*options*
+Can either model as the collection of independent single-species occupancy models OR
+link by modelling parameters as random effects (i.e. hyperparameters mu and sd to be estimated), and thereby leverage observations of more common species for estimation of less common ones:
+
+`beta0[k] ~ dnorm(mu_b0, sd_b0)`
+`beta1[k] ~ dnorm(mu_b1, sd_b1)`
+.. and so on for all beta for all species k. (This assumes that the beta from all the species come from a normal distribution). 
+
+Can include the species never observed in the study such that the total species is given by `M`. Note, while the choice of `M` is not critical, it should be >> the true number of species `N` (which is bigger than the observed). To do this, introduce `omega`, the probability the species is part of the community, resulting in the binary `w[k]`. This can then be summed to get the regional species richness pool. (we probably don't want this, particularly as it slows the computation considerably, and the interpretation of what N relates to is difficult).
+
+`w[k] ~ dbern(omega)`
+`z[i,k] ~ dbern(w[k]*psi[i,k])`
+`N = sum(w[1:k])`  # sum over k
+
+# Setup
+```{r library setup}
+library(nimble)
+# library(nimbleEcology) - don't need this as not using a simple occupancy model
+library(tidyverse)
+
+data_input_code <- "~/nimbleModel_multiOcc_v5_farmData.R"
+results_folder <- "~/Results/"
+version_folder <- "v5/"
+```
+
+# build model
+
+Based on https://github.com/nimble-training/AHMnimble/blob/master/Chapter_11/Section_11p6p3_example_nimble.R
+and https://github.com/nimble-training/AHMnimble/blob/master/Chapter_11/Section_11p7p2_example_nimble.R
+and also check https://doi.org/10.1002/ece3.6053 
+
+New updates to deal with missing data as advised by Chloé Nater.
+
+```{r model code}
+occupancy_code <- nimbleCode({
+  
+  # Priors
+  
+    # Proportion of species present in the study region assuming nSpecies > nObsSpecies
+    omega ~ dbeta(0.001, 1)
+    # option to truncate this to Nobs/M - 1 (can't be less than observed)
+    # omega ~ dunif(Nobs/M,1)  
+    # omega ~ T(dbeta(0.001, 1), Nobs/M, 1)  
+    
+    # Hyperpriors describe the community
+  
+    # For the model of occupancy (psi)
+    mu.lpsi ~ dnorm(0,0.01)
+    tau.lpsi <- pow(sd.lpsi, -2)  # power: pow(x,y) = x^y
+    sd.lpsi ~ dunif(0, 12)   # bounds of uniform chosen by trial and error
+    
+    for (lpsii in 1:npsi){
+      mu.betalpsi[lpsii] ~ dnorm(0, 2.25)          # recommended default priors
+      tau.betalpsi[lpsii]  <- pow(sd.betalpsi[lpsii] , -2)
+      sd.betalpsi[lpsii]  ~ dunif(0, 6)
+    }
+
+    # For the model of detection (p)
+    mu.lp ~ dnorm(0, 0.1)
+    tau.lp <- pow(sd.lp, -2)
+    sd.lp ~ dunif(0, 5) # bounds of uniform chosen by trial and error
+    
+    for (lpi in 1:np){
+      mu.betalp[lpi] ~ dnorm(0, 2.25)
+      tau.betalp[lpi] <- pow(sd.betalp[lpi], -2)
+      sd.betalp[lpi] ~ dunif(0, 5)
+    }
+    
+    # Priors for species-specific effects in occupancy and detection
+    # are derived from the community level distributions
+    for(k in 1:M){
+      # occupancy
+      lpsi[k] ~ dnorm(mu.lpsi, tau.lpsi)    
+      for (lpsii in 1:npsi){
+         betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], tau.betalpsi[lpsii])
+      }
+      
+      # detection
+      lp[k] ~ dnorm(mu.lp, tau.lp)
+      for(lpi in 1:np){
+        betalp[k, lpi] ~ dnorm(mu.betalp[lpi], tau.betalp[lpi])
+      }
+    }
+    
+    # Super-population process: proportion of species in the regional pool part of the community 
+    for(k in 1:M){
+      w[k] ~ dbern(omega)  # w is binary presence of each species in the community
+    }
+    
+    # Ecological model for true occurrence (process model) - enviro variables, interacting with habitat
+    # here 1, 2, 3, represent: habitat, farm85, forest85, elevation, twi, dis, dis85
+    for(k in 1:M){
+      for (i in 1:nSite) {
+        logit(psi[i,k]) <- lpsi[k] + 
+          # series of betalpsi1[k] * X1[i]
+          # inprod(betalpsi[k,1:npsi], Xoc[i,1:npsi])  
+           betalpsi[k,1] * Xoc[i,1] +  # elevation
+           betalpsi[k,2] * Xoc[i,2] +  # fl_dis
+           betalpsi[k,3] * Xoc[i,3]    # sidi1ha
+          # betalpsi[k,4] * Xoc[i,4]   # slope 
+          # betalpsi[k,5] * Xoc[i,5]   # farm_type !Binary
+        mu.psi[i,k] <- w[k] * psi[i,k]
+        z[i,k] ~ dbern(mu.psi[i,k])
+      }
+    }
+    
+    # Observation model for replicated detection/non-detection observations 
+    # n_observers + visibility + recording + date + start
+    for(k in 1:M){
+      for (i in 1:nSite){
+        for(j in 1:nVisits){
+          logit(p[i,j,k]) <- lp[k] + 
+            # series of betalp1[k] * X1[i,j]
+            # inprod(betalp[k,1:np], Xob[i,j,1:np]) 
+            betalp[k,1] * Xob[i,j,1] + # date
+            betalp[k,2] * Xob[i,j,2] + # start1
+            betalp[k,3] * Xob[i,j,3] #+ # start2
+            # betalp[k,4] * Xob[i,j,4]   # visibility !Binary
+          mu.p[i,j,k] <- z[i,k] * p[i,j,k]   
+          Y[i,j,k] ~ dbern(mu.p[i,j,k])  
+        }
+      }
+    }
+    
+    # Derived quantities
+    for (i in 1:nSite){
+      SR_site_all[i] <- sum(z[i,1:M])          # Number of occurring species at each site
+      SR_site_obs[i] <- sum(z[i,1:Nobs])       # Number of observed speciesoccurring species at each site
+    }
+    n0 <- sum(w[(Nobs+1):M])              # Number of unseen species over study
+    Ntotal <- sum(w[1:M])                 # Total metacommunity size
+    
+})
+```
+
+# Specify model: code, data (observed), constants (set), and inits (starting value for estimated values)
+
+```{r import data}
+source(data_input_code)
+```
+
+## the short, default way
+```{r run nimbleMCMC}
+
+# MCMC settings - development - final
+# (ni - nb)/nt # samples per chain
+# ni <- 10      ;   nt <- 1    ;   nb <- 0       ;   nc <- 3
+# ni <- 25000   ;   nt <- 10   ;   nb <- 0   ;   nc <- 3
+# ni <- 50000   ;   nt <- 20   ;   nb <- 0   ;   nc <- 3
+# ni <- 50000   ;   nt <- 20   ;   nb <- 15000   ;   nc <- 3
+ ni <- 130000  ;   nt <- 30   ;   nb <- 25000   ;   nc <- 3   # = 3500 samples per chain
+
+samples <- nimbleMCMC(
+  code = occupancy_code,
+  data = data,
+  constants = constants,
+  inits = inits,
+  monitors = params1,
+  thin = nt,
+  niter = ni,
+  nburnin = nb,
+  nchains = nc)
+```
+
+## Or the long way
+```{r not run manually compile build run}
+# # Build the model
+# occupancy_model <- nimbleModel(
+#  occupancy_code,
+#  data = data,
+#  constants = constants,
+#  inits = inits
+# )
+# 
+# # configure the MCMC algorithm and build the MCMC object using default samplers
+# MCMCconf <- configureMCMC(occupancy_model, monitors = params1)
+
+# check samplers
+# MCMCconf$printSamplers()
+
+# we may want to change the samplers - testing automated blocking 
+# https://r-nimble.org/html_manual/cha-mcmc.html#automated-parameter-blocking
+# autoBlockConf <- configureMCMC(occupancy_model, monitors = params1, autoBlock = TRUE)
+# 
+# MCMC <- buildMCMC(autoBlockConf, monitors = params1, thin = nt)
+# # 
+# # # compile for faster execution
+# CMCMC <- compileNimble(MCMC, project = occupancy_model)
+# # 
+# # ## Run the MCMC and extract the samples
+# samples <- runMCMC(mcmc = CMCMC, niter = ni, nburnin = nb, nchains = nc)
+```
+
+```{r save results}
+saveRDS(samples, paste0(results_folder, version_folder, "BirdOccMod_samples_farm", format(Sys.time(), "%Y%m%d"), ".RDS"))
+```
+ 
+# model diagnostics
+
+```{r MCMCvis}
+
+library(MCMCvis)
+
+pg1 <- c("omega", "n0", "Ntotal", "SR_site_all", "SR_site_obs")
+pg2 <-c("mu.lpsi", "sd.lpsi", "mu.betalpsi", "sd.betalpsi", "mu.lp", "sd.lp", "mu.betalp", "sd.betalp")
+
+# summary of estimates
+mySum1 <- MCMCsummary(samples, 
+            params = pg1, 
+            round = 2)
+
+mySum2 <- MCMCsummary(samples, 
+            params = pg2, 
+            round = 2)
+
+# trace plots
+MCMCtrace(samples, 
+          params = pg1,
+          ind = TRUE, 
+          Rhat = TRUE, n.eff = TRUE,
+          filename = paste0(results_folder, version_foler, "plots_traceDensity_pg1_farm", format(Sys.time(), "%Y%m%d"), ".pdf"))
+MCMCtrace(samples, 
+          params = pg2,
+          ind = TRUE, 
+          Rhat = TRUE, n.eff = TRUE,
+          filename = paste0(results_folder, version_folder, "plots_traceDensity_pg2_farm", format(Sys.time(), "%Y%m%d"), ".pdf"))
+
+# caterpillar plots
+MCMCplot(samples, 
+         # samples for model 2,
+         params = pg2, 
+         ci = c(50, 90), 
+         HPD = FALSE)  # plots equal tailed credible intervals
+
+MCMCplot(samples, 
+         # samples for model 2,
+         params = 'SR_site_all', 
+         ci = c(50, 90), 
+         HPD = FALSE)  # plots equal tailed credible intervals
+```

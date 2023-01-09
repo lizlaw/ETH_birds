@@ -1,0 +1,360 @@
+---
+title: "Bird SR - rarefication - v2"
+author: "Liz Law"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Aim
+To analyse bird species richness. Here, we account for imperfect observation of birds by rarefying (i.e. interpolating or extrapolating) species richness estimates to a set number of observed individuals per site. We combine the two visits per site. We assume this accounts for *all* of the observation variability (e..g. due to start time, date, etc.) and that each site is surveyed equivalently. We use the median number of individuals seen at a site as the rarefication point of comparison.
+
+Then we conduct stepwise GLM (using AIC) and MuMIn dredge (using AICc) to identify two candidate GLM models. These are subject to model checks, and cross validation. The final model is chosen based on accuracy, fit to the data, and reasonable predictions. 
+
+Farm and forest habitats are modelled seperately, due to different processes and variables. We model:
+
+* Farmland - total species richness
+* Forest   - total species richness
+* Farmland - forest specialist richness
+* Forest   - forest specialist richness
+
+Version 2 excludes species identified to genus only. 
+
+# setup
+```{r}
+ggplot2::theme_set(ggplot2::theme_bw())
+
+library(tidyverse)
+library(iNEXT)
+#library(scales)
+```
+
+# data 
+## Location and load
+```{r}
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_birds/"
+BirdData <- readRDS(paste0(wd, "Data/LandscapeBirds_cleandata.RDS"))
+```
+
+## Cleaning and formatting
+Note two sites only have one of the rounds, remove these sites from data 
+```{r}
+BirdData[1:3] <- BirdData[1:3] %>% 
+  map(function(x){x %>% filter(!(point_id %in% c("GBD12GR01", "TBW05TF05")))})
+```
+
+Sumarise observations, then remove species identified to genus only 
+```{r}
+
+# total observations
+BirdData$ObsvData %>% nrow()   # 2768
+
+allspp <- BirdData$ObsvData$species_code     # n = 2768
+genspp <- allspp[str_detect(allspp, "_sp$")] # n = 333
+
+allspp <- BirdData$ObsvData$species_code %>% unique %>% sort # n=159
+genspp <- allspp[str_detect(allspp, "_sp$")]                 # n=24
+
+# check that this does not result in loss of genus
+# genspp
+# allspp
+
+# number of species in total
+length(allspp); length(genspp)
+
+# remove genus only species
+BirdData$ObsvData <- BirdData$ObsvData %>%  
+  filter(species_code %>% str_detect("_sp$", negate = TRUE))
+
+# new total observations
+BirdData$ObsvData %>% nrow()
+BirdData$ObsvData$species_code %>% unique %>% length
+
+```
+
+
+## Bird counts per site -  all species
+There were two rounds of surveys, these need to be combined into one
+```{r}
+BirdCounts <- BirdData$ObsvData %>% 
+  select(point_id, species_code, n_ind) %>%
+  left_join(BirdData$SiteData %>% select(point_id, habitat)) %>% 
+  group_by(habitat, point_id, species_code) %>%
+  summarise(n_ind = sum(n_ind)) %>% 
+  ungroup()
+
+BirdCounts %>% filter(habitat=="FARM") %>% pull(species_code) %>% unique %>% length
+BirdCounts %>% filter(habitat=="FOR") %>% pull(species_code) %>% unique %>% length
+
+siteCounts <- BirdCounts %>% 
+  group_by(habitat, point_id) %>%
+  summarise(n_spp = n()) 
+
+farmCounts <- siteCounts %>% filter(habitat=="FARM") %>% pull(n_spp)
+  median(farmCounts); mean(farmCounts); range(farmCounts)
+forestCounts <- siteCounts %>% filter(habitat=="FOR") %>% pull(n_spp)
+  median(forestCounts); mean(forestCounts); range(forestCounts)
+
+cdf <- BirdCounts %>% 
+  pivot_wider(names_from = species_code, values_from = n_ind) %>% 
+  replace(is.na(.), 0)
+
+farmcdf <- cdf %>% filter(habitat == "FARM") %>% select(-habitat, -point_id) %>% as.matrix()
+frstcdf <- cdf %>% filter(habitat == "FOR") %>% select(-habitat, -point_id) %>% as.matrix()
+
+sum(farmcdf) #2278
+sum(frstcdf) #1345
+```
+
+# Explore proportion of sites each species is seen in ----
+```{r}
+BirdCounts %>% 
+  group_by(habitat, species_code) %>% 
+  summarise(n_sites = n()) %>% 
+  mutate(p_sites = ifelse(habitat == "FARM", n_sites/80, n_sites/65)) %>% 
+  ggplot(aes(y=p_sites, x=habitat)) +
+    geom_violin(fill = "grey", alpha = 0.5) +
+    geom_boxplot(alpha = 0.5, width = 0.1) + 
+    #scale_y_continuous(trans = "pseudo_log", breaks = c(0,1:3,5,10,20,40)) +
+    labs(title = "Proportion of sites species observed in") +
+    xlab("Habitat") + ylab("Proportion of sites") # (pseudo-log scale)") 
+```
+
+# use iNEXT to develop individual based rarefaction curves ----
+Colwell et al 2012 (https://doi.org/10.1093/jpe/rtr044) rarefaction and extrapolation estimators implemented in freeware applications EstimateS (Colwell 2011) and in iNEXT (http://chao.stat.nthu.edu.tw/softwareCE.html).
+
+For species richness, the extrapolation method is reliable up to the double (conservative) to triple reference sample size; beyond that, the prediction bias may be large (https://doi.org/10.1093/jpe/rtr044)
+
+In the results, $AsyEst lists the observed diversity, asymptotic estimates, estimated bootstrap s.e. and 95% confidence intervals for Hill numbers with q = 0, 1, and 2. The estimated asymptotes are calculated via the functions ChaoSpecies() for q = 0, ChaoEntropy() for q = 1 and EstSimpson() for q = 2; see Chao et al. (2014) for asymptotic estimators.
+
+## sample completeness in each habitat type ----
+```{r}
+scdf<- cdf %>% 
+  select(-point_id) %>% 
+  group_by(habitat) %>% 
+  summarise(across(Bost_hage:Cucu_soli, sum)) %>% 
+  select(-habitat) %>% 
+  as.matrix() %>% 
+  t()
+
+dimnames(scdf)[[2]] <- c("FARM", "FOREST")
+
+SC <- iNEXT(scdf, q=0, datatype = "abundance", nboot = 100)   # default endpoints of n=2x sampled
+
+SC$AsyEst %>% 
+  as_tibble %>% 
+  filter(Diversity == "Species richness") %>% 
+  mutate(PropSampled = Observed/Estimator)
+```
+
+We estimate that sampling in farmland was 91.5% (116 of 127) of species, and sampling of forest was 77.3% (75 of 97) of species. This gives us a total M species in each habitat to include in the Bayesian Multi-species-occupancy model, i.e. we add 11 species to farm, and 22 species to forest.
+
+Check asymtote estimates:
+```{r}
+sum(farmcdf) #2278
+sum(frstcdf) #1345
+SCfm <- iNEXT(scdf, q=0, datatype = "abundance", endpoint = sum(farmcdf)*3 , nboot = 100)  
+SCfm$iNextEst
+SCfs <- iNEXT(scdf, q=0, datatype = "abundance", endpoint = sum(frstcdf)*3, nboot = 100)  
+SCfs$iNextEst
+```
+This suggests that the Asymptote estimates are possibly biased as these are reached at more than 3x the current number of individuals sampled, in forest (Emax = 96.85026 at 3x1345) more than farmland (Emax = 126.57138 at 3x2278).
+
+Plot with asymptotes:
+```{r}
+SCp <- SC
+SCp$iNextEst$FARM <- SCfm$iNextEst$FARM
+SCp$iNextEst$FOREST <- SCfs$iNextEst$FOREST
+
+ggiNEXT(SCp) + geom_hline(yintercept = c(126.79526, 97.02528), lty = c(2,3)) # includes asymptote estimates
+```
+
+## Rarefied species richness in each site 
+This is a standardised estimate of species richness per site. It is the species richness at the same number of individuals observed (in both habitats) to ensure consistency in the metric between sites and models.
+
+```{r}
+MAT <- cdf %>% 
+    select(-habitat, -point_id) %>% 
+    as.matrix() %>% 
+    t()
+  
+  dimnames(MAT)[[2]] <- cdf$point_id
+  nInds <- MAT %>% colSums() 
+  quantile(nInds)
+  nEnd <- quantile(nInds, p=0.5) # the median number of individuals = 23
+  
+  (checkpoints <- bind_cols(nInds = nInds, 
+                            point_id = cdf$point_id, 
+                            habitat = cdf$habitat) %>% 
+    mutate(b2 = nInds < (nEnd/2),
+           b3 = nInds < (nEnd/3)) %>% 
+    arrange(nInds) %>%   
+    filter(b2+b3 >0))  # bias due to extrapolation to median over 2x and 3x sampled size
+  
+  filter(checkpoints, b2+b3 ==2) %>% pull(point_id)
+  filter(checkpoints, b2+b3 ==1) %>% pull(point_id)
+  nK <- min(nEnd, 40) # number of intervals in curve estimates (capped at 40, likely less)
+  SRe <- iNEXT(MAT, q=0, datatype = "abundance", endpoint = nEnd, knots = nK, nboot = 100)    
+  
+  RSR <- SRe$iNextEst$size_based %>% 
+    filter(m==nEnd) %>% 
+    add_column(nInds = nInds) %>% 
+    mutate(bias2 = nInds < (nEnd/2),
+           bias3 = nInds < (nEnd/3)) %>% 
+    select(point_id=Assemblage, nInds, m, RSR = qD, bias2, bias3)
+```
+
+Save this data for the GLM analysis
+```{r}
+saveRDS(RSR, file = paste0(wd, "Data/LandscapeBirds_rarefiedSR.RDS"))
+```
+
+# Bird counts per site -  specialist species
+Specialist species of interest.  "Diet and foraging strategy were gathered from the Elton Traits Database (Wilman et al., 2014). Forest dependency, migration status and the degree of endemicity were derived from Birdlife International's World Database, 2016 (retrieved at http://www.birdlife.org/datazone) and complemented with data from The Handbook of the Birds of the World (Del Hoyo et al., 2014). The degree of endemicity was calculated for each species as the inverse of their documented spatial extent of oc- currence." Rodrigues et al 2018 biocon.
+
+Possible options:
+
+diet_5cat (Rodruiges specifically looked at frugivores, insectivores; suggest we look at FruiNect, Invertebrate, PlantSeed)
+```{r}
+BirdData$TraitData$diet_5cat %>% table()
+```
+    FruiNect Invertebrate           NA     Omnivore    PlantSeed VertFishScav 
+          21           78            9           32           23           13
+          
+migration_birdlife (a more detailed categorisation is migration_hbw. Suggest we look at full migrants only).
+```{r}          
+BirdData$TraitData$migration_birdlife %>% table()
+```
+altitudinal migrant        full migrant                  NA         non migrant 
+                  2                  33                   9                 132 
+
+forest_dependency_birdlife (Suggest we combine high and medium?)
+```{r}
+BirdData$TraitData$forest_dependency_birdlife %>% table()
+```
+does not occur in forest                     high                      low                   medium 
+                      41                       10                       61                       47 
+                      NA 
+                      17 
+
+status - not enough to model here
+ CR  LC  NA  NT  VU 
+  2 163   9   1   1 
+  
+endemic_based_on_distribution_from_bird_life_datazone - possibly model Eth+Erit endemics.        
+         East Africa             Ethiopia Ethiopia and Eritrea                   NA                   no 
+                  17                    3                   11                   18                  127
+                      
+```{r}
+BirdTraits <- BirdData$TraitData %>% 
+  select(species_code = spcode, 
+         diet = diet_5cat, 
+         forest_dependency = forest_dependency_birdlife,
+         migration = migration_birdlife, 
+         endemic = endemic_based_on_distribution_from_bird_life_datazone)
+```
+
+```{r}
+BirdCountsWT <- BirdData$ObsvData %>% 
+  select(point_id, species_code, n_ind) %>%
+  left_join(BirdData$SiteData %>% select(point_id, habitat)) %>% 
+  left_join(BirdTraits)
+  
+birdSelect <- function(...){
+  BirdCountsWT %>% 
+  filter(...) %>% 
+  group_by(habitat, point_id, species_code) %>%
+  summarise(n_ind = sum(n_ind)) %>% 
+  ungroup()
+}
+
+Specialists <- tibble(
+  Group = c("Diet_FN", "Diet_Inv", "Diet_PS", 
+            "Forest_Specialist", "Migrant", "Endemic"),
+  CountData = list(
+    birdSelect(diet == "FruiNect"),
+    birdSelect(diet == "Invertebrate"),
+    birdSelect(diet == "PlantSeed"),
+    birdSelect(forest_dependency %in% c("high", "medium")), #,
+    birdSelect(migration == "full migrant"),
+    birdSelect(endemic %in% c("Ethiopia", "Ethiopia and Eritrea"))
+))
+
+```
+
+## Rarefied species richness in each site for each specialist group 
+```{r, message=FALSE}
+
+Rareify <- function(counts){
+  
+  # prepare count df and convert to matrix
+  cdf <- counts %>% 
+    pivot_wider(names_from = species_code, values_from = n_ind) %>% 
+    replace(is.na(.), 0)
+  
+  MAT <- cdf %>% 
+    select(-habitat, -point_id) %>% 
+    as.matrix() %>% 
+    t()
+  
+  dimnames(MAT)[[2]] <- cdf$point_id
+  
+  # calculate endpoint at the median number of individuals observed & knots
+  nInds <- tibble(
+    nInds = MAT %>% colSums(),
+    site = MAT %>% colnames()
+  )
+  nEnd <- quantile(nInds$nInds, p=0.5) # the median
+  nK <- min(nEnd, 40) # number of intervals in curve estimates (capped at 40, likely less)
+  
+  # do rarification
+  SRe <- iNEXT(MAT, q=0, datatype = "abundance", endpoint = nEnd, knots = nK, nboot = 100)    
+  
+  # combine in data frame and 
+  # identify those that may include bias due to extrapolation to median over 2x and 3x sampled size
+  RSR <- SRe$iNextEst$size_based %>% 
+    filter(m==nEnd) %>% 
+    left_join(nInds, by = c("Assemblage"="site")) %>% 
+    mutate(bias2 = nInds < (nEnd/2),
+           bias3 = nInds < (nEnd/3)) %>% 
+    select(point_id=Assemblage, nInds, m, RSR = qD, bias2, bias3)
+  
+  return(list(nEnd=nEnd, RSR=RSR))
+}
+
+Specialists <- Specialists %>% 
+  mutate(RSR = map(CountData, Rareify)) %>%   ## issue with 3, 5
+  unnest_wider(RSR)
+
+# extract bias counts and the number of sites with only one species, for which estimates are not robuast
+Specialists <- Specialists %>% 
+  mutate(bias2 = map_dbl(RSR, function(x)sum(x$bias2)),
+         bias3 = map_dbl(RSR, function(x)sum(x$bias3)),
+         nInds1 = map_dbl(RSR, function(x)sum(x$nInds==1)),
+         nSpp = map(CountData, function(x) x %>% 
+                           group_by(point_id) %>% 
+                           summarise(nSpp = n_distinct(species_code)) %>% 
+                           ungroup()),
+         nSpp1 = map_dbl(nSpp, function(x) x %>% 
+                           mutate(nSpp1 = nSpp == 1) %>% 
+                           pull(nSpp1) %>% 
+                           sum()
+                         )
+  )
+
+```
+Check for which species this is a reasonable process for.
+```{r}
+Specialists  
+```
+
+Probably only acceptable for Diet_FN, Diet_Inv, Forest_Specialist
+Not for Diet_PS, Migrant, or Endemic.
+
+Save this data for the GLM analysis
+```{r}
+saveRDS(Specialists, file = paste0(wd, "Data/LandscapeBirds_rarefiedSRspecialists.RDS"))
+```
+ 
+ 
+ !! Rather than modelling species richness of these groups, we could do occupancy modelling of group abundance (using the raw count data and the observation variables).
+    

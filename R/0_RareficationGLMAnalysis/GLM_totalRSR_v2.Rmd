@@ -1,0 +1,573 @@
+---
+title: "GLManalysis_RSR_total species"
+author: "Liz Law"
+date: "19 Dec 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tibble)
+library(ggfortify)
+library(caret)
+library(DHARMa)
+```
+
+# Data
+
+Here we use rarefied total species richness (i.e. expected richness), here at the median number of individuals observed per site (26 individuals). This requires some extrapolation and some interpolation. Bias2 and bias3 indicate where this extrapolation is greater than 2x or 3x the actual observed individuals at a site, and therefore which have a strong potential for bias/inaccuracy of the estimate. This rarefication is an attempt at removing sampling effects from the data (e.g. effects of start time, date, visibility, n_observers), so we do not include these in the resulting model. We use the same number of species for both habitats to ensure these models are comparable. 
+
+Site data are all spatial predictors, but include a different set for each habitat type. We include data examination of the occupancy variables here as well. 
+
+```{r import data}
+# rarefied species richness was calculated in `iNEXT`
+wd <- "/Users/elaw/Desktop/LeuphanaProject/BirdModelling/ETH_Birds/"
+RSR <- readRDS(file = paste0(wd, "Data/LandscapeBirds_rarefiedSR.RDS"))
+
+# site data come from the cleaned bird data
+BirdData <- readRDS(paste0(wd, "Data/LandscapeBirds_cleandata.RDS"))
+
+# Note two sites only have one of the rounds, remove these sites from data 
+BirdData[1:3] <- BirdData[1:3] %>% 
+  map(function(x){x %>% filter(!(point_id %in% c("GBD12GR01", "TBW05TF05")))})
+
+RSR <- RSR %>% left_join(BirdData$SiteData)
+
+farmRSR <- RSR %>% filter(habitat == "FARM") %>% select_if(~ !any(is.na(.))) %>% 
+  rename(farm_85 = farm_type)
+forRSR <- RSR %>% filter(habitat == "FOR") %>% select_if(~ !any(is.na(.))) %>% 
+  rename(forest_85 = forest_type)
+
+```
+
+# Data examination
+Summaries
+```{r}
+farmRSR %>% summary()
+forRSR %>% summary()
+```
+
+Bivariate relationships are shown with loess (y~x, red), linear (y~x, blue) and quadratic (y~poly(x,2), yellow) lines, or boxplots where appropriate. 
+
+```{r, include = FALSE}
+# Set up plot functions:
+myplot <- function(df, ...){
+  ggplot(df, aes(...)) +
+    geom_point(alpha = 0.3) +
+    geom_smooth(color = "red") + 
+    geom_smooth(method = "lm") +
+    geom_rug(alpha = 0.2)
+}
+
+mytitle <- function(x){
+  cowplot::ggdraw() + 
+    cowplot::draw_label(x, fontface = 'bold', x = 0, hjust = 0) + 
+    theme(plot.margin = margin(0, 0, 0, 7))
+}
+
+add_boxplot <- function(p, ...){
+  p + geom_boxplot(aes(...), fill = NA, width = 0.25)
+}
+add_smoothPoly <- function(p){
+  p + geom_smooth(method = "lm", formula = y ~ poly(x,2), color = "yellow")
+}
+```
+
+### Farmland
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Farmland bivariate relationships for occupancy variables"}
+## occVL_joint <- c("point_id", "kebele", "habitat", "hab_details", "X", "Y", "elevation", "slope", "twi")
+## occVL_farm <- c("farm_85", "sidi1ha", "sidi200", "pwv1ha", "pwv500", "fl_dis", "fl_dis85")
+
+
+(plt_frmocc <- cowplot::plot_grid(
+  mytitle("Farmland, occupancy variables"),
+  cowplot::plot_grid(
+    myplot(farmRSR, farm_85, RSR) %>% add_boxplot(group = farm_85),
+    myplot(farmRSR, elevation, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, slope, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, twi, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, sidi1ha, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, sidi200, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, pwv1ha, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, pwv500, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, fl_dis, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, fl_dis85, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, hab_details, RSR) %>% add_boxplot(group = hab_details),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+))
+
+```
+
+Discussion of Farmland occupancy variables: 
+
+* farm_85: unbalanced between 0:1. Median is higher but less spread for new farms (expected).
+* elevation: reasonably normal, and shows a small, negative relationship with RSR (expected). No strong indication of the need for a quadratic term, but this might be expected ecologically.
+* slope: skewed right, with a small, negative relationship with RSR (?expected given influence on plants/farms?). No strong indication of the need for a quadratic term.
+* twi: skewed right, with a strong positive relationship with RSR (4-5 spp difference between extremes)(?expected given influence plants/farms). No strong indication of the need for a quadratic term. Seems to be enough data to support the trend across the data.
+* sidi1ha: skewed right, with a small, positive relationship with RSR (expected). No strong indication of the need for a quadratic term.
+* sidi200: reasonably normal, with a small positive linear relationship with RSR (expected). No strong indication of the need for a quadratic term.
+* pwv1ha: extremely right skewed with many observations at or near zero, with a small positive linear relationship with RSR (expected). No indication of quadratic. 
+* pwv500: right skewed, with a small positive linear relationship with RSR (expected). No indication of quadratic. 
+* fl_dis: right skewed, with a small negative linear relationship with RSR (expected). Quadratic follows the loess line, but not well supported at the upper end.
+* fl_dis85: right skewed, with a small negative linear relationship with RSR (expected). No indication of quadratic. 
+
+Similar to the tree SR modelling, we may want to be careful with pwv1ha (due to skew, although relationship is our expected direction here), and twi (because of skew of the relationship that we don't really understand).
+
+We may want to consider transforming slope, twi, sidi1ha, pwv500, fl_dis, and fl_dis85.
+
+### Forest
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Forest bivariate relationships for occupancy variables"}
+
+## occVL_joint <- c("point_id", "kebele", "habitat", "hab_details", "X", "Y", "elevation", "slope", "twi")
+## occVL_frst <- c("forest_85", "fr_dis", "fr_dis85", "hli", "pwv2km")
+
+(plt_fstocc <- cowplot::plot_grid(
+  mytitle("Forest, occupancy variables"),
+  cowplot::plot_grid(
+    myplot(forRSR, forest_85, RSR) %>% add_boxplot(group = forest_85), 
+    myplot(forRSR, elevation, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, slope, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, twi, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, fr_dis, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, fr_dis85, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, hli, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, pwv2km, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, hab_details, RSR) %>% add_boxplot(group = hab_details), 
+    labels = "auto"
+  ),
+ncol = 1, rel_heights = c(0.1, 1)
+))
+```
+
+Discussion of forest occupancy variables:
+
+* forest_85: higher median in primary forests, same spread.
+* elevation: skewed right, strong positive relationship. Quadratic not indicated. 
+* slope: reasonably normal, slight negative relationship. Quadratic not indicated.
+* twi: skewed right, slight positive relationship. Not enough data to support quadratic in upper ranges.
+* fr_dis: skewed right, slight positive relationship. Could consider quadratic.
+* fr_dis85: skewed right with elevated zeros, slight positive relationship. Could consider quadratic.
+* hli: relatively normal, no strong relationship with RSR. Quadratic not indicated.
+* pwv2km: skewed left, positive relationship with RSR. Quadratic not indicated.
+* hab_details: Contrary to base species richness, RSR appears to be on average higher in natural forest than coffee forests.
+
+Consider transforming elevation, twi, distance variables, and pwv2km. 
+
+## Transforming variables
+Variables we'd like to consider transforming include:
+
+* Farmland occupancy: slope, twi, sidi1ha, pwv500, fl_dis, and fl_dis85
+* Forest occupancy: elevation, twi, distance variables, and pwv2km
+
+Potential transformations assessed using `bestNormalize::bestNormalize`, preferring conventional transformations where these were close to optimal
+```{r, include = FALSE}
+# check best transformations
+
+bestNormalize::bestNormalize(farmRSR$slope)    ## sqrt(x+a), a = 0   (log would also be ok)
+bestNormalize::bestNormalize(farmRSR$twi)      ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(farmRSR$sidi1ha)  ## sqrt(x+a), a = 0
+bestNormalize::bestNormalize(farmRSR$pwv500)   ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(farmRSR$fl_dis)   ## log_10(x+a), a = 1 best here, but use sqrt to be consistent with other dis variables
+bestNormalize::bestNormalize(farmRSR$fl_dis85) ## sqrt(x+a), a = 0
+
+bestNormalize::bestNormalize(forRSR$elevation)## log_10(x+a), a = 1
+bestNormalize::bestNormalize(forRSR$twi)      ## log_10(x+a), a = 1
+bestNormalize::bestNormalize(forRSR$pwv2km)   ## nothing is great here, centre scale ok
+bestNormalize::bestNormalize(forRSR$fr_dis)   ## sqrt(x+a), a = 0
+bestNormalize::bestNormalize(forRSR$fr_dis85) ## sqrt(x+a), a = 0
+
+```
+
+Apply transformations:
+```{r}
+farmRSR <- farmRSR %>% 
+  mutate(
+    slope = sqrt(slope),
+    twi = log10(twi+1),
+    sidi1ha = sqrt(sidi1ha),
+    pwv500 = log10(pwv500+1),
+    fl_dis = sqrt(fl_dis),
+    fl_dis85 = sqrt(fl_dis85)
+  )
+
+forRSR <- forRSR %>% 
+  mutate(
+    elevation = log10(elevation+1),
+    twi = log10(twi+1),
+    fr_dis = sqrt(fr_dis),
+    fr_dis85 = sqrt(fr_dis85)
+  )
+
+```
+
+Transformed farmland vars:
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Farmland bivariate relationships for transformed variables"}
+
+cowplot::plot_grid(
+  mytitle("Farmland, transformed variables"),
+  cowplot::plot_grid(
+    myplot(farmRSR, slope, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, twi, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, sidi1ha, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, pwv500, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, fl_dis, RSR) %>% add_smoothPoly(),
+    myplot(farmRSR, fl_dis85, RSR) %>% add_smoothPoly(),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+)
+
+```
+
+Discussion: all of these suggest a linear trend (not enough difference/data to support curves at extremes). twi remains quite skewed and should be treated with caution.
+
+Transformed forest vars:
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap="Forest bivariate relationships for transformed variables"}
+
+cowplot::plot_grid(
+  mytitle("Forest, transformed variables"),
+  cowplot::plot_grid(
+    myplot(forRSR, elevation, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, twi, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, fr_dis, RSR) %>% add_smoothPoly(),
+    myplot(forRSR, fr_dis85, RSR) %>% add_smoothPoly(),
+    labels = "auto"
+  ),
+  ncol = 1, rel_heights = c(0.1, 1)
+)
+
+```
+
+Discussion: 
+
+* elevation retains positive relationship with SR, possibly due to reduced disturbance? Quadratic not advised here.
+* twi shows a messy positive relationship, which may taper. Consider quadratic to capture this, but not well supported in the extremes.
+* fr_dis shows positive relationship, which could include quadratic but perhaps only to improve extrapolation.
+* fr_dis85 is positive, quadratic not advised.
+
+## Centre - scale all continuous variables in both datasets
+All other continuous variables (excluding binary, X,Y) will need to be scaled and centred in order to improve comparability in the GLMs. Also need to remove those we identified as being problematic, to prevent their further use.
+
+```{r}
+
+farmRSR <- farmRSR %>% 
+  # select(-pwv1ha, -twi) %>% 
+  # select(-n_observers, -recording, -cloud) %>% 
+  mutate(across(c(elevation, slope, twi, sidi1ha, sidi200, pwv1ha, pwv500, fl_dis, fl_dis85),
+         ~scale(.x)[,1]))
+
+forRSR <- forRSR %>% 
+  # select(-recording) %>% 
+  mutate(across(c(elevation, slope, twi, fr_dis, fr_dis85, hli, pwv2km),
+         ~scale(.x)[,1]))
+```
+
+## Correlation plots
+These show Pearson correlation using `corrplot::corrplot`
+
+### Farmland
+```{r, echo = FALSE, fig.cap = "Farmland variables - Pearson correlation"}
+corM_frm <- farmRSR %>% 
+  select(-point_id, -c(nInds:bias3), -habitat, -c(kebele:Y)) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  cor()
+corrplot::corrplot(corM_frm, order = 'AOE', method = 'number')
+```
+
+Discussion of farmland correlations: 
+
+* elevation and sidi200 have pearson correlation of -0.6 ... include them both for now, prefer elevation.
+* pwv500m and fl_dis have pearson correlation of -0.74 ... remove pwv500 as fl_dis has better spread.
+* twi and slope have pearson correlation of -0.6 ... remove twi as slope has better spread
+
+Suggest removing sidi200, pwv500, twi
+
+### Forest
+```{r, echo = FALSE, fig.cap="Forest variables - Pearson correlation"}
+corM_fst <- forRSR %>% 
+  select(-point_id, -c(nInds:bias3), -habitat, -c(kebele:Y)) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  cor()
+corrplot::corrplot(corM_fst, order = 'AOE', method = 'number')
+```
+Discussion:
+
+* elevation and fr_dis85 have pearson correlation of 0.63. 
+* forest_85 and fr_dis85 have pearson correlation of 0.73. 
+* fr_dis and fr_dis85 have pearson correlation of 0.61. 
+* pwv2km and forest_85 have pearson correlation of 0.65.
+* pwv2km and fr_dis have pearson correlation of 0.69.
+
+Suggest removing fr_dis85, and pwv2km. Possibly also twi.
+
+# Summary of the variables 
+
+## Farmland
+Variables: *bold are retained*
+
+* *elevation* 
+* *slope (sqrt)*
+* twi (log10(x+1), remove due to correlation with slope and poor spread)
+* *farm_85*
+* *sidi1ha(sqrt)*
+* sidi200 (remove due to correlation with elevation)
+* pwv1ha (remove due to extreme skew)
+* pwv500 (log10(x+1), remove due to correlation)
+* *fl_dis (sqrt)*
+* fl_dis85 (sqrt, remove due to correlation)
+
+## Forest
+Variables: *bold are retained* 
+
+* *elevation (log10(x+1))*
+* *slope*
+* twi (log10(x+1)) (remove due to correlation with slope and poor spread)
+* *forest_85*
+* *fr_dis (sqrt)*
+* fr_dis85 (sqrt, remove due to correlation)
+* *hli*
+* pwv2km (remove due to correlation)
+
+# GLM analyses 
+
+Rarefied SR is not a count variable, but rather a continuous one that can be approximated with gaussian. It is somewhat left skewed, but normal enough.
+
+Bias2 and bias3 observations. Bias 3 include 2 farm sites, with 7 and 6 individuals observed, and 3 forest sites, with 5,6,7 individuals observed. Bias 2 includes 8 farm sites with 6-11 individuals observed, and 8 forest sites with 5-11 individuals observed.
+```{r}
+farmRSR %>% filter(bias3 == TRUE)
+forRSR %>% filter(bias3 == TRUE)
+
+farmRSR %>% filter(bias2 == TRUE)
+forRSR %>% filter(bias2 == TRUE)
+```
+
+Starting from the full set of variables preselected above, conduct backwards step selection using AIC.
+```{r}
+# Full farm formula
+fffrm <- formula(RSR ~ elevation + slope + farm_85 + sidi1ha + fl_dis)
+
+# Full forest formula
+fffst <- formula(RSR ~ elevation + slope + twi + forest_85 + fr_dis + hli)
+```
+
+## Farm GLM
+Removing bias3 == TRUE points as these are very likely unsuitable.
+```{r}
+farmRSRs <- farmRSR %>% filter(bias3==FALSE)
+
+m0frm <- glm(formula = fffrm, 
+             family = gaussian,
+             data = farmRSRs)
+summary(m0frm)
+car::vif(m0frm)
+autoplot(m0frm, which = 1:6, data = farmRSRs, colour = "bias2")
+```
+This appears to be a reasonable model without too much heteroskedasticity (with smaller predicted variables having more residual variation than larger ones, but this is driven a little by only a few points).
+
+Two points of note:
+
+* #45, which is a farmland site with 62 individuals observed, and an RSR of 4.5.
+* #8 , which is a farmland site with 48 individuals observed, and an RSR of 15.6.
+* #58, which is a farmland site with 11 individuals observed, and an RSR of 3.
+
+These are acceptable, although these may skew the more general relationships observed. We can observe what happens without these points later.
+
+Backwards stepwise AIC selection.
+```{r}
+m1frm <- MASS::stepAIC(m0frm)
+summary(m1frm)  
+autoplot(m1frm, which = 1:6, data = farmRSRs, colour = "bias2")
+```
+
+Selected farm model: 
+
+* RSR ~ farm_85 + sidi1ha + fl_dis
+* family = gaussian
+
+In this model, plot # 45 still has the strongest influence. 
+
+Dredge top model
+```{r}
+options(na.action = na.fail)
+
+dm0frm <- MuMIn::dredge(m0frm)
+dm0frm
+m2frm <- eval(getCall(dm0frm, 1))
+
+summary(m2frm)
+autoplot(m2frm, which = 1:6, data = farmRSRs, colour = "bias2")
+```
+The top model here is the same model as the backwards AIC step selection. The second best includes sidi1ha and distance, and the third sidi only. Other models within dAICc<2 are farm_85 + sidi1ha, and slope + farm_85 + fl_dis + sidi1ha.
+
+## Forest 
+Full model
+```{r}
+forRSRs <-  forRSR %>% filter(bias3==FALSE)
+
+m0fst <- glm(formula = fffst, 
+             family = gaussian,
+             data = forRSRs)
+car::vif(m0fst)
+summary(m0fst)
+autoplot(m0fst, which = 1:6, data = forRSRs, colour = "bias2")
+```
+
+Here the interesting plots are #1, #40, and #61.
+
+* #1 is forest plot with 36 individuals sighted and an RSR of 14.5
+* #40 is forest plot with 10 individuals sighted and RSR of 7.7
+* #61 is forest plot with 16 individuals sighted and RSR of 5.2
+
+These are again all reasonable estimates.
+
+Backwards stepwise AIC selection
+```{r}
+m1fst <- MASS::stepAIC(m0fst)
+summary(m1fst)  
+autoplot(m1fst, which = 1:6, data = forRSRs, colour = "bias2")
+```
+
+Selected forest model:
+
+* RSR ~ elevation + forest_85
+* family = gaussian
+
+In this model interesting plots are #1, and less so #40 and #61
+
+Dredge top model
+```{r}
+dm0fst <- MuMIn::dredge(m0fst)
+dm0fst
+m2fst <- eval(getCall(dm0fst, 1))
+
+summary(m2fst)
+autoplot(m2fst, which = 1:6, data = forRSRs, colour = "bias2")
+
+options(na.action = na.omit)
+```
+
+This suggests the top model is forest_85 only, and other top models (dAICc<2) are, forest_85 + fr_dis only, elev2 + forest_85 only, the one selected above, and forest_85 + twi.
+
+# Summary of selected models
+
+Farmland: 
+* RSR ~ farm_85 + sidi1ha + fl_dis  # selected by both step and dredge
+
+Forest:
+* RSR ~ elevation + forest_type + fr_dis # selected by step, and best 3 var model from dredge
+
+# Summaries and additional checks of selected models
+May also try devtools::install_github("goodekat/ggResidpanel") 
+https://cran.r-project.org/web/packages/ggResidpanel/vignettes/introduction.html
+modEvA can also do some evaluations
+
+```{r}
+frm1 <- glm(RSR ~ sidi1ha + fl_dis + farm_85, data = farmRSRs, family = gaussian)
+fst1 <- glm(RSR ~ elevation + forest_85 + fr_dis, data = forRSRs, family = gaussian)
+```
+
+Cross validation functions using caret
+Defaults to repeated cross validation with 8 folds and 3 repeats.
+```{r}
+cvres <- function(mod, data, k=8, rep = 3, .seed = 123){
+  # defining training control as repeated cross-validation 
+  # value of splits (K) is k and repetition is rep times
+  train_control <- trainControl(method = "repeatedcv",
+                            number = k, repeats = rep)
+  # training the model across these repeated splits
+  set.seed(.seed)
+  train(formula(mod), 
+        data = data,
+        method = "glm",
+        family = family(mod),
+        trControl = train_control)
+}
+```
+
+## Farmland model
+```{r}
+(compFarm <- tibble(
+  model = list(frm1),
+  rsq = map_dbl(model, rsq::rsq),
+  rmse = map_dbl(model, ~modelr::rmse(.x, data = farmRSRs)),
+  mae = map_dbl(model, ~modelr::mae(.x, data = farmRSRs)),
+  cvres = map(model, ~cvres(.x, farmRSRs)$results)
+) %>% 
+  unnest_wider(cvres) %>% 
+  select(-parameter))
+```
+
+## Farmland model checks
+```{r}
+simres1 <- simulateResiduals(frm1, plot = FALSE)
+
+# standard residual tests
+plot(simres1)  # suggests some issues with lower quartile
+testResiduals(simres1) # ok
+
+# spatial autocorrelation
+testSpatialAutocorrelation(simres1, x = farmRSRs$X, y = farmRSRs$Y) # ok
+
+# plot residuals against predictor variables
+listVars <- farmRSR %>% select(kebele, hab_details:sidi1ha) %>% names()
+purrr::map(listVars, ~DHARMa::plotResiduals(simres1, form = farmRSRs[[.x]], xlab = .x)) 
+```
+
+Plots of frm1 against predictors/categorical suggest no variables *significantly* heterogeneous. Of note:
+
+* new farms (farm_type 0) higher residuals than older ones, non-significant
+* hab_details: FMM, FMO, FMS have lower residuals, and FMT, GR have higher, HG around median.
+* kebele: KeleHarari, GuidoBere have higher median residual, DifoMani and Bereweringo median residual is lower
+
+##Forest models 
+```{r}
+
+(compFst <- tibble(
+  model = list(fst1),
+  rsq = map_dbl(model, rsq::rsq),
+  rmse = map_dbl(model, ~modelr::rmse(.x, data = forRSRs)),
+  mae = map_dbl(model, ~modelr::mae(.x, data = forRSRs)),
+  cvres = map(model, ~cvres(.x, forRSRs)$results)
+) %>% 
+  unnest_wider(cvres) %>% 
+  select(-parameter))
+```
+
+## Forest model checks
+```{r}
+simres1 <- simulateResiduals(fst1, plot = FALSE)
+
+# standard residual tests
+plot(simres1)  # both ok
+testResiduals(simres1) # ok
+
+# spatial autocorrelation
+testSpatialAutocorrelation(simres1, x = forRSRs$X, y = forRSRs$Y) # ok
+
+# plot residuals against predictor variables
+listVars <- forRSR %>% select(kebele, hab_details:hli) %>% names()
+purrr::map(listVars, ~DHARMa::plotResiduals(simres1, form = forRSRs[[.x]], xlab = .x)) 
+```
+
+Plots of fst1 against predictors all ok.
+
+# Summary 
+
+Using data with bias3 removed (2 forest sites), best models are:
+
+Farmland RSR ~ sidi1ha + fl_dis + farm_85, family = gaussian. 
+Forest RSR ~ elevation + forest_85 + fr_dis, family = gaussian. 
+
+Both with low accuracy, and forest predicting slightly better than farmland. Model checks suggested these were all reasonable models with no significant spatial autocorrelation, and no identifiable missing variables. NOTE: tried elevation^2 but this resulted in an upwards (smile) curve, which is not ecologically expected here. not a well supported relationship either. 
+
+```{r}
+library(effects)
+
+farmEffects <- allEffects(frm1)
+plot(farmEffects)
+
+fstEffects <- allEffects(fst1)
+plot(fstEffects)
+```

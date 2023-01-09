@@ -1,0 +1,39 @@
+---
+title: "SessionInfo"
+author: "Liz Law"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ETH_birdModelling
+
+Libraries used through this analysis
+```{r libraries, message=FALSE}
+library(tidyverse)         # general programming, data manipulation, plotting 
+                              # (tibble, dplyr, stringr, readr, purrr, ggplot)
+library(readxl)            # data load 
+library(terra)             # spatial analysis, raster processing
+library(bestNormalize)     # variable transformation 
+library(corrplot)          # correlation 
+library(AER)               # dispersion tests of GLM models
+library(randomForest)      # random forest models
+library(MuMIn)             # multi-model inference
+library(iNEXT)             # rarefaction 
+library(nimble)            # bayesian modelling
+library(nimbleEcology)     # bayesian modelling
+library(MCMCvis)           # model checking
+library(foreach)           # loops (inc parallelization)
+library(doParallel)        # parallel processing (not used currently)
+library(bayestestR)        # evaluation metrics
+library(rmarkdown)         # script management, reports, and documentation
+```
+
+Session info
+```{r}
+sessionInfo()
+```
+
