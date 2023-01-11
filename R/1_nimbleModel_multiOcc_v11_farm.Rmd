@@ -21,6 +21,7 @@ Multi-species occupancy model using nimbleEcology
 ```{r library setup}
 library(nimble)
 library(nimbleEcology)
+ library(nimbleDistance) #  if using halfnorm function
 library(tidyverse)
 
 mySeed <- 101 
@@ -33,6 +34,8 @@ results_folder <- paste0(wd, "/Results/")
 version_folder <- "v11/"
 data_version <- "v7"
 data_input <- paste0(wd, "/Data/nimbleModel_multiOcc_", data_version,"_allData.RDS")
+
+trialName <- "HN"  # hyperpriors priors inits library params manually altered. 
 ```
 
 # build model
@@ -54,18 +57,27 @@ occupancy_code <- nimbleCode({
     for (lpsii in 2:npsi){
       mu.betalpsi[lpsii] ~ dunif(-5, 5) # mu for each psi param drawn from uniform prior 
     }
-    mu.betalpsi[1] ~ dunif(0, 6) # the shape parameter for the polynomial gamma- uniform prior
     sd.betalpsi  ~ dunif(0, 6) # constant sd for all species on all psi parameters
+    
+    # prior for elevation polynomial
+     # gamma version
+     #  mu.betalpsi[1] ~ dunif(0, 6) # the shape parameter gamma- uniform prior
+     #  mu.betalpsi1Rate ~ dunif(0, 6) # the rate parameter gamma- uniform prior
+     # lognorm version 
+     #  mu.betalpsi[1] ~ dunif(-1,1) # the mu parameter lognorm- uniform prior
+     # mu.betalpsi1sd ~ dunif(0, 1) # the sd parameter lognorm- uniform prior
+     # halfnorm version  
+       mu.betalpsi[1] ~ dunif(1, 12) # the sigma parameter halfnorm- uniform prior
+     
   
   # Hyperpriors for the model of detection (p)
     Mu.lp ~ dunif(0,1)          # uniform community prior
     mu.lp <- logit(Mu.lp)       # logit model link
     sd.lp ~ dunif(0, 5)         # bounds of uniform chosen by trial and error
     
-    for (lpi in 2:np){
+    for (lpi in 1:np){
       mu.betalp[lpi] ~ dunif(-5, 5) # mu for each p param drawn from uniform prior 
     }
-      mu.betalp[1] ~ dunif(0, 6) #  the shape parameter for the polynomial gamma- uniform prior
     sd.betalp ~ dunif(0, 6) # constant sd for all p parameters
   
   # Priors for species-specific effects in occupancy and detection
@@ -77,13 +89,20 @@ occupancy_code <- nimbleCode({
     for (lpsii in 2:npsi){
       betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)
     }
-      betalpsi[k, 1] ~ dgamma(shape=mu.betalpsi[1], rate=1) # force gamma distribution for the polynomial
-    # detection
+      # gamma distribution for the polynomial
+      #betalpsi[k, 1] ~ dgamma(shape=mu.betalpsi[1], 
+      #                        rate=mu.betalpsi1Rate) 
+      # lognorm distribution for the polynomial
+      #betalpsi[k, 1] ~ dlnorm(meanlog=mu.betalpsi[1], 
+      #                        sdlog=mu.betalpsi1sd) 
+      # halfnorm distribution for the polynomial
+      betalpsi[k, 1] ~ dHN_V(sigma=mu.betalpsi[1]) 
+      
     lp[k] ~ dnorm(mu.lp, sd=sd.lp)
-    for(lpi in 2:np){
+    for(lpi in 1:np){
       betalp[k, lpi] ~ dnorm(mu.betalp[lpi], sd=sd.betalp)
     }
-      betalp[k, 1] ~ dgamma(shape=mu.betalp[1], rate=1) # force gamma distribution for the polynomial
+
   }       
 
   # the multi-species occupancy model
@@ -92,8 +111,8 @@ occupancy_code <- nimbleCode({
     for (i in 1:nSite){
       
       logit(psi[i,k]) <- lpsi[k] + 
-        betalpsi[k,1] * Xoc[i,1] +  # elevation1
-        betalpsi[k,2] * Xoc[i,2] +  # elevation2
+        betalpsi[k,1] * Xoc[i,1] +  # elevation2
+        betalpsi[k,2] * Xoc[i,2] +  # elevation1
         betalpsi[k,3] * Xoc[i,3] +  # farm_85
         betalpsi[k,4] * Xoc[i,4] +  # fl_dis
         betalpsi[k,5] * Xoc[i,5] +  # sidi1ha
@@ -105,9 +124,9 @@ occupancy_code <- nimbleCode({
       for(j in 1:nVisits){
         
         logit(p[i,j,k]) <- lp[k] + 
-          betalp[k,1] * Xob[i,j,1] + # date
-          betalp[k,2] * Xob[i,j,2] + # start1
-          betalp[k,3] * Xob[i,j,3] + # start2
+          betalp[k,1] * Xob[i,j,1] + # start2
+          betalp[k,2] * Xob[i,j,2] + # date
+          betalp[k,3] * Xob[i,j,3] + # start1
           betalp[k,4] * Xob[i,j,4]   # visibility
         
         # mu.p[i,j,k] <- z[i,k] * p[i,j,k]   
@@ -147,12 +166,13 @@ M <- Nobs + Nadd
 Y <- abind::abind(y, array(0, dim = c(dim(y)[1:2], Nadd)))  ## add the 'missing' species - not seen so = 0, 'absence'
 
 # occupancy variables [site, vars]
-# 1"elevation1" 2"elevation2" 3"farm_85" 4"fl_dis" 5 "sidi1ha" 6"slope
+# 1"elevation2" 2"elevation1" 3"farm_85" 4"fl_dis" 5 "sidi1ha" 6"slope
 Xoc <- OccVarsFarm %>% select(-point_id) %>% as.matrix() %>% array(dim = dim(.)) 
 names(OccVarsFarm)
 Xoc <- Xoc[,c(2,1,3:6)]  
 
 # observation variables [site, visit, vars]
+# 1"start2", 2"date",3"start1",4"visibility"
 Xob <- array(NA, dim = c(nSite, nVisits, dim(ObsVarsFarm)[2]-2)) 
 Xob[,,1] <- ObsVarsFarm %>% arrange(round, point_id) %>% pull(date)
 Xob[,,2] <- ObsVarsFarm %>% arrange(round, point_id) %>% pull(start1)
@@ -166,10 +186,11 @@ np <- dim(Xob)[3]
 # Initial values - match up with the number of observed vars used in the model
 lpsi <- rnorm(n = M)
 betalpsi <- array(rnorm(n = M * npsi), dim = c(M, npsi))
-betalpsi[1:M, 1] <- rgamma(n = M, shape = 1, rate = 1) # correct betalpsi 2 to be rgamma
+# betalpsi[1:M, 1] <- rgamma(n = M, shape = 1, rate = 1) # correct betalpsi 2 to be rgamma
+# betalpsi[1:M, 1] <- rlnorm(n = M, meanlog=0, sdlog=1) # lognorm version
+ betalpsi[1:M, 1] <- rHN_V(n = M, sigma = 1) # halfnorm version
 lp <- rnorm(n = M)
 betalp <- array(rnorm(n = M * np), dim = c(M, np))
-betalp[1:M, 1] <- rgamma(n = M, shape = 1, rate = 1) # correct betalpsi 3 to be rgamma
 
 # list required variables
 data <- list(Y = Y, 
@@ -188,8 +209,10 @@ inits <- list(
   lp = lp, 
   betalp = betalp 
 )
-params1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p")
-
+params1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p",
+            # "mu.betalpsi", "mu.betalpsi1Rate")  # gamma
+            #  "mu.betalpsi", "mu.betalpsi1sd") # lnorm
+               "mu.betalpsi")  # halfnorm
 ```
 
 ## run MCMC
@@ -216,7 +239,8 @@ samples <- nimbleMCMC(
 # model diagnostics
 ```{r MCMCvis}
 library(MCMCvis)
-pg1 <- c("lpsi", "betalpsi", "lp", "betalp") 
+pg1 <- c("mu.betalpsi", "mu.betalpsi1sd", 
+         "lpsi", "betalpsi", "lp", "betalp") 
 
 # summary of estimates --- we want Rhat < 1.1, and n.eff >100
 mysum <- MCMCsummary(samples, 
@@ -234,6 +258,7 @@ MCMCtrace(samples,
           Rhat = TRUE, n.eff = TRUE,
           filename = paste0("Results/", version_folder, 
                             "plots_traceDensity_pg1_farm_", 
+                            "_trial", trialName,
                             format(Sys.time(), "%Y%m%d"), ".pdf"))
 
 # caterpillar plots - choose parameter option
@@ -251,7 +276,7 @@ MCMCplot(samples,
 saveRDS(samples, paste0(results_folder, version_folder, 
                         "BirdOccMod_dOcc_samples_farm_", 
                         format(Sys.time(), "%Y%m%d"), 
-                        "_seed", mySeed, ".RDS"))
+                        "_trial", trialName, ".RDS"))
 saveRDS(list(data,constants), paste0("Data/Farm_nimbleOccData_",data_version,"_", 
                                      format(Sys.time(), "%Y%m%d"), ".RDS"))
 ```
