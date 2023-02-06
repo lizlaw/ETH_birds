@@ -1,10 +1,10 @@
 ---
-title: "bayesBirdModel_multiSPecies_v11 - FARM"
+  title: "bayesBirdModel_multiSPecies_v11 - FARM"
 author: "Liz Law"
 date: "`r Sys.Date()`"
 output: html_document
 ---
-workingconservation@gmail.com
+  workingconservation@gmail.com
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -21,7 +21,6 @@ Multi-species occupancy model using nimbleEcology
 ```{r library setup}
 library(nimble)
 library(nimbleEcology)
- library(nimbleDistance) #  if using halfnorm function
 library(tidyverse)
 
 mySeed <- 101 
@@ -35,7 +34,7 @@ version_folder <- "v11/"
 data_version <- "v7"
 data_input <- paste0(wd, "/Data/nimbleModel_multiOcc_", data_version,"_allData.RDS")
 
-trialName <- "HN"  # hyperpriors priors inits library params manually altered. 
+trialName <- "NoPolyFVars"  # hyperpriors priors inits library params manually altered. 
 ```
 
 # build model
@@ -50,68 +49,71 @@ occupancy_code <- nimbleCode({
   # all beta p (observation) parameters.
   
   # Hyperpriors for the model of occupancy (psi)
-    Mu.lpsi ~ dunif(0,1)          # uniform community prior  
-    mu.lpsi <- logit(Mu.lpsi)     # logit model link
-    sd.lpsi ~ dunif(0, 12)        # bounds of uniform chosen by trial and error
-         
-    for (lpsii in 2:npsi){
-      mu.betalpsi[lpsii] ~ dunif(-5, 5) # mu for each psi param drawn from uniform prior 
-    }
-    sd.betalpsi  ~ dunif(0, 6) # constant sd for all species on all psi parameters
-    
-    # prior for elevation polynomial
-     # gamma version
-     #  mu.betalpsi[1] ~ dunif(0, 6) # the shape parameter gamma- uniform prior
-     #  mu.betalpsi1Rate ~ dunif(0, 6) # the rate parameter gamma- uniform prior
-     # lognorm version 
-     #  mu.betalpsi[1] ~ dunif(-1,1) # the mu parameter lognorm- uniform prior
-     # mu.betalpsi1sd ~ dunif(0, 1) # the sd parameter lognorm- uniform prior
-     # halfnorm version  
-       mu.betalpsi[1] ~ dunif(1, 12) # the sigma parameter halfnorm- uniform prior
-     
+  Mu.lpsi ~ dunif(0,1)          # uniform community prior  
+  mu.lpsi <- logit(Mu.lpsi)     # logit model link
+  sd.lpsi ~ dunif(0, 12)        # bounds of uniform chosen by trial and error
+  
+  for (lpsii in 2:npsi){
+    mu.betalpsi[lpsii] ~ dunif(-5, 5) # mu for each psi param drawn from uniform prior 
+  }
+  sd.betalpsi  ~ dunif(0, 6) # constant sd for all species on all psi parameters
+  
+  # prior for elevation polynomial
+  # gamma version
+  #  mu.betalpsi[1] ~ dunif(0, 6) # the shape parameter gamma- uniform prior
+  #  sd.betalpsi1 ~ dunif(0, 6) # the rate parameter gamma- uniform prior
+  # lognorm version 
+  #mu.betalpsi[1] ~ dunif(-5, 5) # the mu parameter lognorm- uniform prior
+  #sd.betalpsi1 ~ dunif(0, 6) # the sd parameter lognorm- uniform prior
+  # trunc norm version  
+  #  mu.betalpsi[1] ~ dunif(0, 5) # the halfnorm mean -  uniform prior (use same sd as others)
+  #  sd.betalpsi1  ~ dunif(0, 6) 
+  # no quadratic version
+    mu.betalpsi[1] <- 0 # the mu parameter 
+    sd.betalpsi1 <- 0 # the sd parameter 
   
   # Hyperpriors for the model of detection (p)
-    Mu.lp ~ dunif(0,1)          # uniform community prior
-    mu.lp <- logit(Mu.lp)       # logit model link
-    sd.lp ~ dunif(0, 5)         # bounds of uniform chosen by trial and error
-    
-    for (lpi in 1:np){
-      mu.betalp[lpi] ~ dunif(-5, 5) # mu for each p param drawn from uniform prior 
-    }
-    sd.betalp ~ dunif(0, 6) # constant sd for all p parameters
+  Mu.lp ~ dunif(0,1)          # uniform community prior
+  mu.lp <- logit(Mu.lp)       # logit model link
+  sd.lp ~ dunif(0, 5)         # bounds of uniform chosen by trial and error
+  
+  for (lpi in 1:np){
+    mu.betalp[lpi] ~ dunif(-5, 5) # mu for each p param drawn from uniform prior 
+  }
+  sd.betalp ~ dunif(0, 6) # constant sd for all p parameters
   
   # Priors for species-specific effects in occupancy and detection
   # are derived from these community level distributions
-
+  
   for(k in 1:M){   
     # occupancy 
     lpsi[k] ~ dnorm(mu.lpsi, sd=sd.lpsi)    
     for (lpsii in 2:npsi){
       betalpsi[k, lpsii] ~ dnorm(mu.betalpsi[lpsii], sd=sd.betalpsi)
     }
-      # gamma distribution for the polynomial
-      #betalpsi[k, 1] ~ dgamma(shape=mu.betalpsi[1], 
-      #                        rate=mu.betalpsi1Rate) 
-      # lognorm distribution for the polynomial
-      #betalpsi[k, 1] ~ dlnorm(meanlog=mu.betalpsi[1], 
-      #                        sdlog=mu.betalpsi1sd) 
-      # halfnorm distribution for the polynomial
-      betalpsi[k, 1] ~ dHN_V(sigma=mu.betalpsi[1]) 
-      
+    # gamma distribution for the polynomial
+    #betalpsi[k, 1] ~ dgamma(shape=mu.betalpsi[1], rate=sd.betalpsi1) 
+    # lognorm distribution for the polynomial - 
+    # betalpsi[k, 1] ~ dlnorm(meanlog=mu.betalpsi[1], sdlog=sd.betalpsi1)
+    # truncnorm distribution for the polynomial
+    #betalpsi[k, 1] ~ T(dnorm(mean = mu.betalpsi[1], sd = sd.betalpsi1), 0, Inf)
+    # no quadratic version
+    betalpsi[k, 1] <- 0
+    
     lp[k] ~ dnorm(mu.lp, sd=sd.lp)
     for(lpi in 1:np){
       betalp[k, lpi] ~ dnorm(mu.betalp[lpi], sd=sd.betalp)
     }
-
+    
   }       
-
+  
   # the multi-species occupancy model
   
   for(k in 1:M){
     for (i in 1:nSite){
       
       logit(psi[i,k]) <- lpsi[k] + 
-        betalpsi[k,1] * Xoc[i,1] +  # elevation2
+        #betalpsi[k,1] * Xoc[i,1] +  # elevation2
         betalpsi[k,2] * Xoc[i,2] +  # elevation1
         betalpsi[k,3] * Xoc[i,3] +  # farm_85
         betalpsi[k,4] * Xoc[i,4] +  # fl_dis
@@ -120,7 +122,7 @@ occupancy_code <- nimbleCode({
       
       # mu.psi[i,k] <- psi[i,k]       
       # z[i,k] ~ dbern(mu.psi[i,k])       ## occupancy drawn from psi - replaced by dOcc
-
+      
       for(j in 1:nVisits){
         
         logit(p[i,j,k]) <- lp[k] + 
@@ -131,10 +133,10 @@ occupancy_code <- nimbleCode({
         
         # mu.p[i,j,k] <- z[i,k] * p[i,j,k]   
         # Y[i,j,k] ~ dbern(mu.p[i,j,k])     ## observations from occupancy and detection (p) - replaced by dOcc
-
+        
       }
       # Marginalized likelihood (dOcc_v from nimbleEcol)
-       Y[i,1:nVisits,k] ~ dOcc_v(
+      Y[i,1:nVisits,k] ~ dOcc_v(
         probOcc = psi[i,k], 
         probDet = p[i,1:nVisits,k], 
         len = nVisits)
@@ -186,9 +188,11 @@ np <- dim(Xob)[3]
 # Initial values - match up with the number of observed vars used in the model
 lpsi <- rnorm(n = M)
 betalpsi <- array(rnorm(n = M * npsi), dim = c(M, npsi))
-# betalpsi[1:M, 1] <- rgamma(n = M, shape = 1, rate = 1) # correct betalpsi 2 to be rgamma
+# betalpsi[1:M, 1] <- rgamma(n = M, shape = 1, rate = 1) # correct betalpsi to be rgamma
 # betalpsi[1:M, 1] <- rlnorm(n = M, meanlog=0, sdlog=1) # lognorm version
- betalpsi[1:M, 1] <- rHN_V(n = M, sigma = 1) # halfnorm version
+# betalpsi[1:M, 1] <- abs(betalpsi[1:M, 1]) # truncnorm version
+ betalpsi[1:M, 1] <- 0 # no quadratic version
+
 lp <- rnorm(n = M)
 betalp <- array(rnorm(n = M * np), dim = c(M, np))
 
@@ -209,10 +213,10 @@ inits <- list(
   lp = lp, 
   betalp = betalp 
 )
-params1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p",
-            # "mu.betalpsi", "mu.betalpsi1Rate")  # gamma
-            #  "mu.betalpsi", "mu.betalpsi1sd") # lnorm
-               "mu.betalpsi")  # halfnorm
+params1 <- c("lpsi", "betalpsi", "lp", "betalp", "psi", "p")#,
+             # "mu.betalpsi", "sd.betalpsi1")  # gamma
+             #  "mu.betalpsi", "sd.betalpsi1") # lnorm
+             #"mu.betalpsi", "sd.betalpsi1")  # truncnorm
 ```
 
 ## run MCMC
@@ -239,13 +243,13 @@ samples <- nimbleMCMC(
 # model diagnostics
 ```{r MCMCvis}
 library(MCMCvis)
-pg1 <- c("mu.betalpsi", "mu.betalpsi1sd", 
+pg1 <- c(#"mu.betalpsi", "sd.betalpsi1", 
          "lpsi", "betalpsi", "lp", "betalp") 
 
 # summary of estimates --- we want Rhat < 1.1, and n.eff >100
 mysum <- MCMCsummary(samples, 
-            params = pg1, 
-            round = 2)
+                     params = pg1, 
+                     round = 2)
 
 mysum[which(mysum$Rhat>1.1),] # %>% dimnames()
 mysum[which(mysum$n.eff<100),]# %>% dimnames() 
