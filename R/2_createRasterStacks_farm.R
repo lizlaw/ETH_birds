@@ -42,12 +42,13 @@ for (scenario in c("Baseline", "BR", "CC", "FF", "CI")){
   
   # resample all rasters, tile, and save in a stack -------------
   # order: # 1"elevation1" 2"elevation2" 3"farm_85" 4"fl_dis" 5 "sidi1ha" 6"slope
-  farm_stack <- rast(list(elevation=resample(elevation, template, method = "bilinear") %>% mask(., template), 
-                          farm_85=resample(farm_85, template, method = "mode") %>% mask(., template), 
-                          fl_dis= resample(fl_dis, template, method = "bilinear") %>% mask(., template), 
-                          sidi1ha=resample(sidi1ha, template, method = "mode") %>% mask(., template), 
-                          slope=resample(slope, template, method = "bilinear") %>% mask(., template) 
-                          ))
+  elevation <- resample(elevation, template, method = "bilinear") %>% mask(., template)
+  farm_85 <- resample(farm_85, template, method = "mode") %>% mask(., template)
+  fl_dis <- resample(fl_dis, template, method = "bilinear") %>% mask(., template)
+  sidi1ha <- resample(sidi1ha, template, method = "mode") %>% mask(., template)
+  slope <- resample(slope, template, method = "bilinear") %>% mask(., template) 
+  
+  farm_stack <- rast(list(elevation, farm_85, fl_dis, sidi1ha, slope))
   writeRaster(farm_stack, paste0(stack_folder, "farm_stack_10m_",scenario,".tif"), overwrite=TRUE)
   farm_stack <- rast(paste0(stack_folder, "farm_stack_10m_",scenario,".tif"))
   

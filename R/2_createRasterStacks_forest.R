@@ -10,6 +10,7 @@ results_folder <- paste0(wd, "/Results/")
 version_folder <- "v11/"
 stack_folder <- paste0("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_stacks/")
 elevation <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_10m/Elevation/Elevation_SA_RS_10.tif")
+hli <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_10m/HLI/hli.tif")
 #slope <- rast("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_10m/Slope/Slope_dgr.tif")
 OccVarsforest_scaleModels <- readRDS("~/Desktop/LeuphanaProject/BirdModelling/ETH_birds/Data/nimbleModel_multiOcc_v7_OccVarsfrst_scaleModels.RDS")
 
@@ -38,16 +39,18 @@ for (scenario in c("Baseline", "BR", "CC", "FF", "CI")){
   rast_folder <- paste0("/Users/elaw/Desktop/LeuphanaProject/ETH_SpatialData/data_10m/",scenario,"/")
   forest_85 <- rast(paste0(rast_folder, "FRtype_",scenario,".tif"))
   fr_dis <- rast(paste0(rast_folder, "FRdis_",scenario,".tif"))
-  hli <- rast(paste0(rast_folder, "hli_",scenario,".tif"))
 
   # resample all rasters, tile, and save in a stack -------------
   # order: "elevation1" "elevation2" "forest_85"  "fr_dis" "hli" 
-  forest_stack <- rast(list(
-    elevation = resample(elevation, template, method = "bilinear") %>% mask(., template), 
-    forest_85 = resample(fr_dis, template, method = "bilinear") %>% mask(., template), 
-    fr_dis = resample(forest_85, template, method = "mode") %>% mask(., template),
-    hli = resample(hli, template, method = "bilinear") %>% mask(., template)
-    ))
+  elevation <- resample(elevation, template, method = "bilinear") %>% mask(., template)
+  fr_dis <- resample(fr_dis, template, method = "bilinear") %>% mask(., template)
+  forest_85 <- resample(forest_85, template, method = "mode") %>% mask(., template)
+  hli <- resample(hli, template, method = "bilinear") %>% mask(., template)
+  
+  forest_stack <- rast(list(elevation=elevation, 
+                            forest_85=forest_85, 
+                            fr_dis=fr_dis, 
+                            hli=hli))
   writeRaster(forest_stack, paste0(stack_folder, "forest_stack_10m_",scenario,".tif"), overwrite=TRUE)
   forest_stack <- rast(paste0(stack_folder, "forest_stack_10m_",scenario,".tif"))
   
@@ -83,7 +86,6 @@ for (scenario in c("Baseline", "BR", "CC", "FF", "CI")){
     # transform "elevation1" "elevation2" "forest_85"  "fr_dis" "hli" 
     elevPoly <- predict(OccVarsforest_scaleModels$elevation, newdata = values_to_predict$elevation)
     values_to_predict <- values_to_predict %>% 
-      select(-elevation) %>% 
       mutate(elevation1 = predict(OccVarsforest_scaleModels$elevation1, 
                                   newdata = elevPoly[,1]),
              elevation2 = predict(OccVarsforest_scaleModels$elevation2, 
@@ -99,7 +101,8 @@ for (scenario in c("Baseline", "BR", "CC", "FF", "CI")){
     # convert back to raster
     pred_stack <- subset(mystack, c(1,1:4))
     names(pred_stack) <- c("elevation1", "elevation2", "forest_85", "fr_dis", "hli")
-    pred_stack$elevation[values_to_predict$cellID] <- values_to_predict$elevation
+    pred_stack$elevation1[values_to_predict$cellID] <- values_to_predict$elevation1
+    pred_stack$elevation2[values_to_predict$cellID] <- values_to_predict$elevation2
     pred_stack$forest_85[values_to_predict$cellID] <- values_to_predict$forest_85
     pred_stack$fr_dis[values_to_predict$cellID] <- values_to_predict$fr_dis
     pred_stack$hli[values_to_predict$cellID] <- values_to_predict$hli
@@ -112,3 +115,4 @@ for (scenario in c("Baseline", "BR", "CC", "FF", "CI")){
     
   } # end resolution loop
 } # end scenario loop.
+
